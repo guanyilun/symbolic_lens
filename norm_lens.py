@@ -22,7 +22,7 @@ def qte(lmax, rlmin, rlmax, ucl, ocl):
 
     A = ucl['TE']/ocl['TT']
     B = ucl['TE']/ocl['EE']
-    res += 2*kernel_G0(lmax, rlmin, rlmax, A, B)
+    res += 2*kernel_Gx(lmax, rlmin, rlmax, A, B)
 
     A = 1/ocl['EE']
     B = ucl['TE']**2/ocl['TT']

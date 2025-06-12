@@ -22,7 +22,7 @@ class GLQuad:
 
     def cf_from_cl(self, s1, s2, cl, lmax=None, lmin=0, prefactor=False):
         if lmax is None: lmax = len(cl) - 1
-        return cf_from_cl(s1, s2, cl, self.x, lmax, prefactor, lmin)
+        return cf_from_cl(s1, s2, cl, self.x, lmax, lmin, prefactor)
 
     def cl_from_cf(self, s1, s2, cf, lmax):
         return cl_from_cf(s1, s2, cf, self.x, self.w, lmax)

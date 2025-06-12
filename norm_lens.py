@@ -1,3 +1,4 @@
+#%%
 import jax
 jax.config.update("jax_enable_x64", True)
 
@@ -18,12 +19,15 @@ def qte(lmax, rlmin, rlmax, ucl, ocl):
     A = 1/ocl['TT']
     B = ucl['TE']**2/ocl['EE']
     res = kernel_S0(lmax, rlmin, rlmax, A, B)
+
     A = ucl['TE']/ocl['TT']
     B = ucl['TE']/ocl['EE']
-    res += 2*kernel_Gx(lmax, rlmin, rlmax, A, B)
+    res += 2*kernel_G0(lmax, rlmin, rlmax, A, B)
+
     A = 1/ocl['EE']
     B = ucl['TE']**2/ocl['TT']
     res += kernel_Sp(lmax, rlmin, rlmax, A, B)
+
     return res**-1
 
 def qtb(lmax, rlmin, rlmax, ucl, ocl):
@@ -116,7 +120,7 @@ def qtbeb(lmax, rlmin, rlmax, ucl, ocl):
 def kernel_S0(lmax, rlmin, rlmax, A, B):
     l = jnp.arange(0, lmax+1)
     glq = GLQuad(int((3*lmax+1)/2))
-    term1 = glq.cf_from_cl(0, 0, A, lmin=rlmin, lmax=rlmax)
+    term1 = glq.cf_from_cl(0, 0, A, lmin=rlmin, lmax=rlmax, prefactor=True)
     term2 = glq.cf_from_cl(1, -1, B*l*(l+1), lmin=rlmin, lmax=rlmax, prefactor=True)
     A = glq.cl_from_cf(1, -1, term1*term2, lmax=lmax)
     term2 = glq.cf_from_cl(1,  1, B*l*(l+1), lmin=rlmin, lmax=rlmax, prefactor=True)
@@ -128,8 +132,8 @@ def kernel_Sp(lmax, rlmin, rlmax, A, B):
     glq = GLQuad(int((3*lmax+1)/2))
     
     # Term for l₁
-    term1 = glq.cf_from_cl(2, -2, A, lmin=rlmin, lmax=rlmax)
-    term1_plus = glq.cf_from_cl(2, 2, A, lmin=rlmin, lmax=rlmax)
+    term1 = glq.cf_from_cl(2, -2, A, lmin=rlmin, lmax=rlmax, prefactor=True)
+    term1_plus = glq.cf_from_cl(2, 2, A, lmin=rlmin, lmax=rlmax, prefactor=True)
     
     # Terms for l₂
     # For (1, ±1)
@@ -344,3 +348,4 @@ if __name__ == '__main__':
     plt.show() 
 
     # agreement within rtol=1e-9
+# %%

@@ -1,7 +1,5 @@
 #%%
 import jax
-jax.config.update("jax_enable_x64", True)
-
 import numpy as np
 import jax.numpy as jnp
 
@@ -119,7 +117,7 @@ def qtbeb(lmax, rlmin, rlmax, ucl, ocl):
 
 def kernel_S0(lmax, rlmin, rlmax, A, B):
     l = jnp.arange(0, lmax+1)
-    glq = GLQuad(int((3*lmax+1)/2))
+    glq = GLQuad(int((3*max(lmax, rlmax)+1)/2))
     term1 = glq.cf_from_cl(0, 0, A, lmin=rlmin, lmax=rlmax, prefactor=True)
     term2 = glq.cf_from_cl(1, -1, B*l*(l+1), lmin=rlmin, lmax=rlmax, prefactor=True)
     A = glq.cl_from_cf(1, -1, term1*term2, lmax=lmax)
@@ -129,7 +127,7 @@ def kernel_S0(lmax, rlmin, rlmax, A, B):
 
 def kernel_Spm(lmax, rlmin, rlmax, A, B, p):
     l = jnp.arange(0, lmax+1)
-    glq = GLQuad(int((3*lmax+1)/2))
+    glq = GLQuad(int((3*max(lmax, rlmax)+1)/2))
     
     # Term for l₁
     term1 = glq.cf_from_cl(2, -2, A, lmin=rlmin, lmax=rlmax, prefactor=True)
@@ -226,7 +224,7 @@ def kernel_Spm(lmax, rlmin, rlmax, A, B, p):
 
 def kernel_Sx(lmax, rlmin, rlmax, A, B):
     l = jnp.arange(0, lmax+1)
-    glq = GLQuad(int((3*lmax+1)/2))
+    glq = GLQuad(int((3*max(lmax,rlmax)+1)/2))
     
     # Term for l₁
     term1 = glq.cf_from_cl(2, 0, A, lmin=rlmin, lmax=rlmax, prefactor=True)
@@ -249,7 +247,7 @@ def kernel_Sx(lmax, rlmin, rlmax, A, B):
 
 def kernel_G0(lmax, rlmin, rlmax, A, B):
     l = jnp.arange(0, lmax+1)
-    glq = GLQuad(int((3*lmax+1)/2))
+    glq = GLQuad(int((3*max(lmax, rlmax)+1)/2))
     term1 = glq.cf_from_cl(1, 0, A * (1 + l)**0.5 * l**0.5, lmin=rlmin, lmax=rlmax, prefactor=True)
     term2 = glq.cf_from_cl(1, 0, B * (1 + l)**0.5 * l**0.5, lmin=rlmin, lmax=rlmax, prefactor=True)
     A = glq.cl_from_cf(1, -1, term1*term2, lmax=lmax)
@@ -258,7 +256,7 @@ def kernel_G0(lmax, rlmin, rlmax, A, B):
     
 def kernel_Gpm(lmax, rlmin, rlmax, A, B, p):
     l = jnp.arange(0, lmax+1)
-    glq = GLQuad(int((3*lmax+1)/2))
+    glq = GLQuad(int((3*max(lmax, rlmax)+1)/2))
     l1, l2 = l, l
     A1, B2 = A, B
 
@@ -314,7 +312,7 @@ def kernel_Gpm(lmax, rlmin, rlmax, A, B, p):
 
 def kernel_Gx(lmax, rlmin, rlmax, A, B):
     l = jnp.arange(0, lmax+1)
-    glq = GLQuad(int((3*lmax+1)/2))
+    glq = GLQuad(int((3*max(lmax, rlmax)+1)/2))
     
     term1_l1 = glq.cf_from_cl(1, 0, A*jnp.sqrt((l-1)*(l+2)), 
                               lmin=rlmin, lmax=rlmax, prefactor=True)
@@ -335,7 +333,7 @@ def kernel_Gx(lmax, rlmin, rlmax, A, B):
 
 
 def qtt_simple(lmax, rlmin, rlmax, ucl, ocl):
-    glq = GLQuad(int((3*lmax + 1)/2))
+    glq = GLQuad(int((3*max(lmax, rlmax) + 1)/2))
     ucl, ocl = ucl['TT'], ocl['TT']
     
     ell = jnp.arange(0, len(ucl))

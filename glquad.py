@@ -1,7 +1,5 @@
 #%%
 import jax
-jax.config.update("jax_enable_x64", True)
-
 import numpy as np
 from dataclasses import dataclass
 from wignerd import cf_from_cl, cl_from_cf

@@ -80,7 +80,8 @@ eliminate_P_rule = RuleSet([
     ),
     Rule.parse(
         name="resolve_P2",
-        rule_str="P**2 -> 1"
+        rule_str="P**2 -> 1",
+        symbols_map={'P': P}
     )
 ])
 
@@ -112,7 +113,7 @@ wigd_sign_rules = RuleSet([
 # useful transformations
 # -----------------------
 
-def drop_P(expr, simplify=True):
+def drop_P(expr, simplify=False):
     """Absorbing P into wigner 3j"""
     non_p_term = factor(expand(expr).subs(P, 0))
     p_term = factor(expand(expr).coeff(P) * P)

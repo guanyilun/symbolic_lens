@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 from itertools import combinations, permutations
 
-from sympy import evaluate, Expr, Symbol, sympify, Add, Mul, simplify
+from sympy import evaluate, Expr, Symbol, sympify, Add, Mul, simplify, true as sympy_true
 from sympy.unify import unify
 
 logger = logging.getLogger(__name__)
@@ -18,50 +18,6 @@ def build_eval_scope(match_dict, wild_to_slot_map):
             eval_scope[wild] = int(val) if val.is_Integer else float(val) if val.is_Float else val
     return eval_scope
 
-def _wrap_condition(item):
-    if isinstance(item, Condition):
-        return item
-    if isinstance(item, str):
-        return cond_(item)
-    if item is None: return None
-    raise TypeError(f"Conditions must be strings or Condition objects, not {type(item).__name__}")
-
-class Condition:
-    """Base class for all condition types."""
-    def __call__(self, match_dict, wild_to_slot_map) -> bool:
-        raise NotImplementedError
-
-class cond_(Condition):
-    """A condition represented by a single string expression."""
-    def __init__(self, expr_str: str):
-        self.expr_str = expr_str
-        q = re.compile(r"\?([a-zA-Z0-9_]+)")
-        self.processed_expr = q.sub(r'\1', self.expr_str)
-    def __call__(self, match_dict, wild_to_slot_map) -> bool:
-        eval_scope = build_eval_scope(match_dict, wild_to_slot_map)
-        logger.debug(f"      - Evaluating condition '{self.processed_expr}' with scope: {eval_scope}")
-        try:
-            result = bool(eval(self.processed_expr, {"__builtins__": {}}, eval_scope))
-            logger.debug(f"      - Condition result: {result}")
-            return result
-        except Exception as e:
-            logger.debug(f"      - Condition failed with error: {e}", exc_info=True)
-            return False
-
-class and_(Condition):
-    """A condition that is true if all of its sub-conditions are true."""
-    def __init__(self, *conditions: Condition):
-        self.conditions = [_wrap_condition(c) for c in conditions]
-    def __call__(self, match_dict, wild_to_slot_map) -> bool:
-        return all(c(match_dict, wild_to_slot_map) for c in self.conditions)
-
-class or_(Condition):
-    """A condition that is true if any of its sub-conditions are true."""
-    def __init__(self, *conditions: Condition):
-        self.conditions = [_wrap_condition(c) for c in conditions]
-    def __call__(self, match_dict, wild_to_slot_map) -> bool:
-        return any(c(match_dict, wild_to_slot_map) for c in self.conditions)
-
 
 @dataclass(frozen=True)
 class Rule:
@@ -72,22 +28,22 @@ class Rule:
     slots: list[Symbol]
     wild_to_slot_map: dict[str, Symbol]
     ac_ops: set[type] = field(default_factory=lambda: {Add, Mul})
-    condition: Condition | None = None
+    condition: Expr | None = None
 
     @classmethod
-    def parse(cls, name: str, rule_str: str, where: Condition | str | None = None, symbols_map={}):
+    def parse(cls, name: str, rule_str: str, where: str | None = None, symbols_map={}):
         try:
             lhs_str, rhs_str = rule_str.split("->")
         except ValueError:
             raise ValueError("Rule must contain '->' separator.")
-        if where is not None and isinstance(where, str):
-            where = cond_(where)
 
         q = re.compile(r"\?([a-zA-Z0-9_]+)")
-        wild_names = list(dict.fromkeys(re.findall(q, lhs_str)))
-        rhs_wild_names = re.findall(q, rhs_str)
+        wild_names_in_lhs = re.findall(q, lhs_str)
+        wild_names_in_where = re.findall(q, where) if where else []
+        wild_names = list(dict.fromkeys(wild_names_in_lhs + wild_names_in_where))
 
-        if not set(rhs_wild_names).issubset(set(wild_names)):
+        rhs_wild_names = re.findall(q, rhs_str)
+        if not set(rhs_wild_names).issubset(set(wild_names_in_lhs)):
             raise ValueError("RHS cannot have wildcards not present in LHS")
 
         slot_symbols = [Symbol(f"slot_{s}") for s in wild_names]
@@ -97,22 +53,33 @@ class Rule:
         lhs_eval_str = q.sub(lambda m: slot_map_for_sub[m.group(1)], lhs_str)
         rhs_eval_str = q.sub(lambda m: slot_map_for_sub[m.group(1)], rhs_str)
 
+        condition = None
+        if where:
+            where_eval_str = q.sub(lambda m: slot_map_for_sub.get(m.group(1), m.group(0)), where)
+            condition = sympify(where_eval_str, locals=symbols_map, evaluate=False)
+
         return cls(
             name=name,
             lhs=sympify(lhs_eval_str, locals=symbols_map, evaluate=False),
             rhs=sympify(rhs_eval_str, locals=symbols_map, evaluate=False),
+            condition=condition, 
             slots=slot_symbols,
             wild_to_slot_map=wild_to_slot_map,
-            condition=where
         )
 
     def _check_condition(self, match_dict):
-        """Helper method to run the condition check."""
         if self.condition is None:
             logger.debug("    - No condition for this rule.")
             return True
-        logger.debug("    - Checking condition...")
-        return self.condition(match_dict, self.wild_to_slot_map)
+        logger.debug(f"    - Checking condition template: {self.condition}")
+        logger.debug(f"    - With match dictionary: {match_dict}")
+        resolved_condition = self.condition.xreplace(match_dict)
+        logger.debug(f"    - Resolved condition: {resolved_condition}")
+        with evaluate(True):
+            out = resolved_condition.doit()
+            if type(out) is bool: return out
+            if out is sympy_true: return True
+        return False
 
     def _ac_match(self, expr, op):
         logger.debug(f"  - Attempting AC match for rule '{self.name}' on '{expr}'")

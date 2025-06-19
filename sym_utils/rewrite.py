@@ -204,6 +204,7 @@ class Prewalk:
             logger.debug(f"  -> Reconstructed expr: {new_expr}")
             return new_expr
 
+
 @dataclass(frozen=True)
 class FixedPoint:
     walker: Postwalk | Prewalk
@@ -234,12 +235,14 @@ class FixedPoint:
         logger.warning(f"FixedPoint reached max iterations ({self.max_iterations}).")
         return current_expr
 
+
 @dataclass(frozen=True)
 class Passthrough:
     ruleset: RuleSet
     def __call__(self, expr):
         transformed_expr = self.ruleset(expr)
         return transformed_expr or expr
+
 
 @dataclass(frozen=True)
 class Chain:

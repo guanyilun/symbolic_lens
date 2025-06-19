@@ -56,8 +56,8 @@ def qeb(lmax, rlmin, rlmax, ucl, ocl):
     A = 1/ocl['EE']
     B = ucl['BB']**2/ocl['BB']
     res = kernel_Spm(lmax, rlmin, rlmax, A, B, -1.)
-    A = ucl['BB']/ocl['BB']
-    B = ucl['EE']/ocl['EE']
+    A = ucl['EE']/ocl['EE'] 
+    B = ucl['BB']/ocl['BB']
     res += 2*kernel_Gpm(lmax, rlmin, rlmax, A, B, -1.)
     A = 1/ocl['BB']
     B = ucl['EE']**2/ocl['EE']
@@ -150,16 +150,16 @@ def kernel_Spm(lmax, rlmin, rlmax, A, B, p):
     term2_33_plus = glq.cf_from_cl(3, 3, B*(l-2)*(l+3), lmin=rlmin, lmax=rlmax, prefactor=True)
     
     # Combine terms
-    A1 = p*glq.cl_from_cf(1, -1, term1*term2_1, lmax=lmax)
+    A1 = glq.cl_from_cf(1, -1, p*term1*term2_1, lmax=lmax)
     A2 = glq.cl_from_cf(1, 1, term1_plus*term2_1_plus, lmax=lmax)
-    A3 = p*glq.cl_from_cf(1, 1, term1*term2_3, lmax=lmax)
-    A4 = glq.cl_from_cf(1, -1, term1_plus*term2_3_plus, lmax=lmax)
+    A3 = glq.cl_from_cf(1, 1, 2*p*term1*term2_3, lmax=lmax)
+    A4 = glq.cl_from_cf(1, -1, 2*term1_plus*term2_3_plus, lmax=lmax)
     A5 = glq.cl_from_cf(1, 1, term1_plus*term2_33_plus, lmax=lmax)
-    A6 = p*glq.cl_from_cf(1, -1, term1*term2_33, lmax=lmax)
+    A6 = glq.cl_from_cf(1, -1, p*term1*term2_33, lmax=lmax)
     
     # Final combination with prefactors
     prefactor = np.pi/4*l*(l+1)
-    return (A1 + A2 + 2*A3 + 2*A4 + A5 + A6) * prefactor
+    return (A1 + A2 + A3 + A4 + A5 + A6) * prefactor
 
 # def kernel_Sp(lmax, rlmin, rlmax, A, B):
 #     l = jnp.arange(0, lmax+1)
@@ -255,7 +255,7 @@ def kernel_G0(lmax, rlmin, rlmax, A, B):
     A = glq.cl_from_cf(1, -1, term1*term2, lmax=lmax)
     B = glq.cl_from_cf(1, 1, term1*term2, lmax=lmax)
     return np.pi * (A - B)*l*(l+1)
-    
+
 def kernel_Gpm(lmax, rlmin, rlmax, A, B, p):
     l = jnp.arange(0, lmax+1)
     glq = GLQuad(int((3*lmax+1)/2))
@@ -278,7 +278,7 @@ def kernel_Gpm(lmax, rlmin, rlmax, A, B, p):
     term4_l2 = glq.cf_from_cl(3, 2, B2 * jnp.sqrt((l2-2)*(l2+3)), lmin=rlmin, lmax=rlmax, prefactor=True)
 
     result1 = glq.cl_from_cf(1, -1, -1*p*(term1_l1*term1_l2) + term3_l1*term3_l2 + term4_l1*term4_l2 - p*(term2_l1*term2_l2), lmax=lmax)
-    result2 = glq.cl_from_cf(1, 1, -(p*(term2_l1*term1_l2) + p*(term1_l1*term2_l2) + term4_l1*term3_l2 + term3_l1*term4_l2), lmax=lmax)
+    result2 = glq.cl_from_cf(1, 1, -1*(p*(term2_l1*term1_l2) + p*(term1_l1*term2_l2) + term4_l1*term3_l2 + term3_l1*term4_l2), lmax=lmax)
     
     # Final combination with common factors
     return np.pi * (result1 + result2) * l*(l+1) / 4

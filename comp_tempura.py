@@ -12,15 +12,17 @@ lmin = 600
 lmax = 3000
 
 
-combos = ["TT","TE","EE","BB"]
+combos = ["TT","TE","TB","EE","BB","EB"]
 
 ucls, tcls = futils.get_theory_dicts(nells = None, lmax = mlmax, grad = False)
 
 Als_yilun = {}
 Als_yilun["TT"] = norm_lens.qtt(mlmax, lmin, lmax, ucls, tcls)
 Als_yilun["TE"] = norm_lens.qte(mlmax, lmin, lmax, ucls, tcls)
+Als_yilun["TB"] = norm_lens.qtb(mlmax, lmin, lmax, ucls, tcls)
 Als_yilun["EE"] = norm_lens.qee(mlmax, lmin, lmax, ucls, tcls)
 Als_yilun["BB"] = norm_lens.qbb(mlmax, lmin, lmax, ucls, tcls)
+Als_yilun["EB"] = norm_lens.qeb(mlmax, lmin, lmax, ucls, tcls)
 
 Als_tempura = tp.get_norms(combos, ucls, ucls, tcls, lmin, lmax, k_ellmax=mlmax)
 

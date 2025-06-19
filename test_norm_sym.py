@@ -3,9 +3,6 @@ from sympy import Function, sqrt, pi, I
 from sym_utils.l12_sum import *
 from sym_utils.rewrite import *
 
-import jax
-jax.config.update("jax_enable_x64", True)
-
 A, B = Function("A"), Function("B")
 zeta_p, zeta_m = 1, I
 c_phi, p_phi = 1, 1
@@ -57,7 +54,6 @@ for name, expr in kernels_lens.items():
     print(ir)
     kernels_lens_func[name] = func
 print("Compilation complete.")
-compiler.build_and_compile(kernels_lens["S0"], args=[l, A, B])
 
 #%% test
 import numpy as np

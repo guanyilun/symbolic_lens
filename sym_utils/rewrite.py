@@ -10,15 +10,6 @@ from sympy.unify import unify
 logger = logging.getLogger(__name__)
 
 
-def build_eval_scope(match_dict, wild_to_slot_map):
-    eval_scope = {}
-    for wild, slot in wild_to_slot_map.items():
-        if slot in match_dict:
-            val = match_dict[slot]
-            eval_scope[wild] = int(val) if val.is_Integer else float(val) if val.is_Float else val
-    return eval_scope
-
-
 @dataclass(frozen=True)
 class Rule:
     """A callable transformation rule with structured, composable conditions."""

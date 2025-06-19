@@ -1,4 +1,5 @@
 import jax
+jax.config.update("jax_enable_x64", True)
 from jax import numpy as jnp
 import numpy as np
 from functools import partial

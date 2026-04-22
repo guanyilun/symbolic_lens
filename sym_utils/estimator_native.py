@@ -452,6 +452,16 @@ def compile_native(terms, lmax, *, px=None, nside=None, shape=None, wcs=None):
                 if (is_W_plus and X_spin_alm == 0 and plan.abs_spin_X > 0
                         and abs(Y_spin_alm) == 2 and plan.abs_spin_Y > 0):
                     plan_factor = -plan_factor
+                # Pol-pol W^+ sign rule (EE/BB).  When BOTH legs carry
+                # polarization input (|spin_alm_X|=|spin_alm_Y|=2) and the
+                # plan is W^+, hand-coded qe_pol_only's ``prod / 2 = -g_m2
+                # · ymap[0] - g_p2 · ymap[1]`` generates an overall sign
+                # opposite to the symbolic's (sX, sY) sign assignment.
+                # This does not affect EB (W^-) or TE-pol (scalar X).
+                if (is_W_plus and abs(X_spin_alm) == 2
+                        and abs(Y_spin_alm) == 2
+                        and plan.abs_spin_X > 0 and plan.abs_spin_Y > 0):
+                    plan_factor = -plan_factor
             for (sX, sY, sL), coeff in plan.coeffs.items():
                 sX_eff = -sX if flip_X else sX
                 sY_eff = -sY if flip_Y else sY

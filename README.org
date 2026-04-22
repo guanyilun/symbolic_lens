@@ -1,0 +1,713 @@
+#+TITLE: Symbolic Lens
+#+AUTHOR: Y. Guan
+#+DESCRIPTION: Symbolic and numerical computation of CMB lensing normalization kernels
+#+PROPERTY: header-args:python :session *symbolic-lens* :results output :exports both
+
+* Overview
+
+This project computes CMB (Cosmic Microwave Background) lensing reconstruction
+normalization kernels. It combines:
+
+1. A *symbolic algebra system* that manipulates Wigner 3j / Wigner-d expressions
+   and compiles them into numerical functions.
+2. A *numerical backend* using JAX-accelerated Gauss-Legendre quadrature and
+   Wigner-d recurrence relations.
+
+The goal is to go from a physics expression (products of Wigner 3j symbols summed
+over two ells) to a compiled numerical kernel automatically.
+
+* Setup
+
+On Compute Canada clusters:
+
+#+begin_src shell :results output
+module load scipy-stack
+pip install --user jax
+#+end_src
+
+Dependencies:
+- =sympy= (via =scipy-stack= module)
+- =jax= (CPU-only is sufficient)
+- =numpy= / =scipy= (via =scipy-stack=)
+- =pytempura= (optional, for validation against reference implementation)
+
+* Project Structure
+
+#+begin_example
+symbolic_lens/
+├── README.org              # this file
+├── requirements.txt        # pytempura, pixell
+│
+│ # Numerical foundation
+├── fastgl.py               # Fast Gauss-Legendre quadrature (Bogaert algorithm)
+├── wignerd.py              # Wigner-d functions via JAX (3-term recurrence)
+├── glquad.py               # Wrapper combining FastGL + Wigner-d transforms
+│
+│ # Physics
+├── norm_lens.py            # Hand-coded lensing normalization kernels
+├── utils.py                # CMB theory spectra helper
+├── comp_tempura.py         # Validation against pytempura
+│
+│ # Symbolic engine (5-layer atomic-tree engine; see "Symbolic Engine" below)
+├── sym_utils/
+│   ├── atom.py             # Layer 1: AtomicFactor tree (domain-agnostic)
+│   ├── sympy_bridge.py     # Layer 2: sympy → atom conversion
+│   ├── normal_form.py      # Layer 3: flatten to sum-of-products FlatTerm list
+│   ├── quotient.py         # Layer 4: reduce mod polynomial relations (e.g. P²=1)
+│   └── l12_sum.py          # Layer 5: CMB-specific compiler (W² summation → numerical)
+│
+│ # Tests
+├── test_norm_sym.py        # Symbolic compiler test for all 8 basis kernels
+└── wignerd_comparison.jl   # Cross-validation with Julia
+#+end_example
+
+* Numerical Layer
+
+** Fast Gauss-Legendre Quadrature (=fastgl.py=)
+
+Computes GL quadrature nodes and weights using the Bogaert algorithm, which
+evaluates Bessel zeros and Chebyshev interpolants to achieve high accuracy for
+arbitrary =n=. Validated against =numpy.polynomial.legendre.leggauss=.
+
+#+begin_src python
+from fastgl import FastGL
+import numpy as np
+
+gl = FastGL(101)
+x_ref, w_ref = np.polynomial.legendre.leggauss(101)
+print("nodes match:", np.allclose(gl.x, x_ref, rtol=1e-8))
+print("weights match:", np.allclose(gl.w, w_ref, rtol=1e-8))
+#+end_src
+
+** Wigner-d Transforms (=wignerd.py=)
+
+Implements forward and inverse Wigner-d transforms using a three-term recurrence
+relation, JIT-compiled with JAX for performance.
+
+- =cf_from_cl(s1, s2, cl, cos_theta, lmax)=: harmonic coefficients $C_\ell$ to
+  configuration-space function $f(\theta)$
+- =cl_from_cf(s1, s2, cf, cos_theta, weights, lmax)=: inverse transform
+
+#+begin_src python
+from wignerd import cf_from_cl, cl_from_cf
+import numpy as np
+
+s1, s2 = 1, 2
+lmax = 10
+cl = np.arange(lmax + 1) * 1.0
+cos_theta = np.linspace(-1, 1, 10)
+
+cf = cf_from_cl(s1, s2, cl, cos_theta, lmax)
+print("cf:", np.array(cf))
+#+end_src
+
+** GLQuad Wrapper (=glquad.py=)
+
+Combines =FastGL= and Wigner-d transforms into a convenient interface. This is
+the main numerical workhorse used by both the hand-coded kernels and the symbolic
+compiler.
+
+#+begin_src python
+from glquad import GLQuad
+import numpy as np
+
+glq = GLQuad(15)
+cl = np.arange(1, 12, dtype=float)
+cf = glq.cf_from_cl(1, 2, cl)
+print("cf:", np.array(cf))
+
+cl_recon = glq.cl_from_cf(3, 4, cf, 10)
+print("cl_recon:", np.array(cl_recon))
+#+end_src
+
+* Symbolic Engine
+
+The symbolic engine automates the derivation of lensing kernels. Instead of
+hand-coding each kernel (as in =norm_lens.py=), we write the physics expression
+symbolically and let the compiler produce a numerical function.
+
+The engine is organized as five layers, lowest being the most general. The
+first four are domain-agnostic and reusable for any symbolic pipeline; the
+fifth is CMB-lensing-specific.
+
+** Layer 1: Atomic-factor tree (=sym_utils/atom.py=)
+
+An =AtomicFactor= is a pure immutable tree:
+=Const=, =Var=, =Pow=, =Mul=, =Add=, =FuncApp(name, args)=. Constructors
+=const=, =var=, =power=, =mul=, =add=, =func= preserve atomicity — they
+flatten nested =Mul=/=Add= and fold numeric constants, but never
+auto-distribute. ~Mul(Add(a,b), c)~ stays that way until you explicitly
+call =distribute()=. This is the invariant that makes downstream pattern
+matching predictable, and is what sympy's eager rewriting does not give
+you.
+
+Utilities: =free_vars=, =evaluate(env)=, =structural_key= (hashable identity
+for grouping), =substitute=, =walk= (bottom-up rewrite), =distribute=
+(explicit), =partition_factors= (bucket factors by predicates).
+
+** Layer 2: SymPy bridge (=sym_utils/sympy_bridge.py=)
+
+=from_sympy(expr)= converts a sympy expression to an =AtomicFactor= tree.
+This is the *only* place in the pipeline that calls sympy. Symbol →
+=Var=; Integer/Rational/pi/… → =Const=; =Pow/Mul/Add= → constructors;
+any sympy =Function= instance (including user =Function= subclasses and
+the project's =wigner_3j= class) → =FuncApp(class_name, args)=. No
+domain knowledge is baked in — e.g., the bridge does not know what
+=wigner_3j= means.
+
+** Layer 3: Normal form (=sym_utils/normal_form.py=)
+
+=flatten(atom)= → =list[FlatTerm(coeff, factors)]=, the sum-of-products
+canonical form. This is the atomic-tree analogue of sympy's =.expand()=
+followed by =.as_ordered_terms()=, but entirely under our control (no
+surprise rewrites anywhere else in the tree).
+
+** Layer 4: Quotient reduction (=sym_utils/quotient.py=)
+
+=reduce_mod_power(terms, var_name, period, residues)= collapses
+~var^period = residues.get(0, 1)~. For P² = 1 one passes =period=2= and
+the default residues; the reducer rewrites each ~P^(2k) → 1~,
+~P^(2k+1) → P~. Works for any idempotent or nilpotent variable (e.g.,
+Grassmann ~ε² = 0~ by passing =residues={0: Const(1), 2: Const(0)}=).
+
+** Layer 5: L12 Sum Compiler (=sym_utils/l12_sum.py=)
+
+Compiles symbolic expressions of the form:
+
+$$\sum_{\ell_1, \ell_2} (\text{Wigner 3j products}) \times A(\ell_1) \times B(\ell_2)$$
+
+into numerical functions that use Gauss-Legendre quadrature.
+
+The compilation pipeline:
+
+1. =from_sympy= converts the expression to the atomic tree.
+2. =_normalize_w3j_args= permutes each =wigner_3j= FuncApp's j-args to
+   the canonical ordering $(\ell, \ell_1, \ell_2)$ via the 3j
+   column-permutation identity, introducing a $P$ factor for odd
+   permutations.
+3. =flatten= distributes and expands integer powers.
+4. =reduce_mod_power= collapses $P^k$ modulo $P^2 = 1$.
+5. Each =FlatTerm= becomes a structured =Term= with slots
+   ~(coeff, l_factor, l1_factor, l2_factor, wigd_l, wigd_l1, wigd_l2)~;
+   the two w3j factors resolve to the wigd triple (3j-product →
+   Wigner-d identity), any residual $P$ absorbs into a single leg's
+   m-side flip, and each wigd $(m, n)$ is canonicalized to
+   $m \ge 0$ (and $n \ge 0$ when $m = 0$), with sign flips accumulated
+   into the coefficient.
+6. Terms are grouped by =(wigd_l, l_factor.structural_key())= and emitted
+   as a numpy closure that calls =cl2cf= / =cf2cl= on the GL quadrature
+   backend.
+
+Example usage:
+
+#+begin_src python
+from sympy import Function, sqrt, pi
+from sym_utils.l12_sum import (
+    L12SumCompiler, wigner_3j, l, l1, l2, P
+)
+
+A, B = Function("A"), Function("B")
+
+# Wigner 3j squared summed over l1, l2
+expr = wigner_3j(l, l1, l2, 2, -2, 0)**2 * \
+       ((2*l1 + 1)/(2*pi) * (2*l2 + 1) / (2*pi)) * \
+       (1 + P) * B(l2) * A(l1)
+
+compiler = L12SumCompiler(lmax=10, rlmin=1, rlmax=10)
+f, terms = compiler.build_and_compile(expr, args=[l, A, B])
+# f is a numpy callable kernel(ell_out, A_array, B_array)
+#+end_src
+
+* Lensing Normalization Kernels
+
+** Basis Kernels (=norm_lens.py=)
+
+All estimator normalizations are built from 8 basis kernels corresponding to
+$\Sigma$ and $\Gamma$ operations with spin-0 and spin-2 fields:
+
+| Kernel     | Function           | Description                    |
+|------------+--------------------+--------------------------------|
+| $\Sigma^0$ | =kernel_S0=        | Spin-0 × spin-0 (temperature)  |
+| $\Sigma^+$ | =kernel_Spm(p=1)=  | Spin-2 × spin-2 (same parity)  |
+| $\Sigma^-$ | =kernel_Spm(p=-1)= | Spin-2 × spin-2 (cross parity) |
+| $\Sigma^x$ | =kernel_Sx=        | Spin-0 × spin-2 (cross)        |
+| $\Gamma^0$ | =kernel_G0=        | Gamma, spin-0 × spin-0         |
+| $\Gamma^+$ | =kernel_Gpm(p=1)=  | Gamma, spin-2 same parity      |
+| $\Gamma^-$ | =kernel_Gpm(p=-1)= | Gamma, spin-2 cross parity     |
+| $\Gamma^x$ | =kernel_Gx=        | Gamma, spin-0 × spin-2         |
+
+These are combined to form the standard quadratic estimator normalizations:
+
+| Estimator | Function | Kernels used                      |
+|-----------+----------+-----------------------------------|
+| TT        | =qtt=    | $\Sigma^0 + \Gamma^0$             |
+| TE        | =qte=    | $\Sigma^0 + 2\Gamma^x + \Sigma^+$ |
+| TB        | =qtb=    | $\Sigma^-$                        |
+| EE        | =qee=    | $\Sigma^+ + \Gamma^+$             |
+| BB        | =qbb=    | $\Sigma^+ + \Gamma^+$             |
+| EB        | =qeb=    | $\Sigma^- + 2\Gamma^- + \Sigma^-$ |
+
+** Hand-coded vs Symbolic
+
+The kernels in =norm_lens.py= are hand-derived and manually translated to code.
+The symbolic engine (=test_norm_sym.py=) aims to reproduce these automatically
+from the physics definitions.
+
+* Testing the Symbolic Compiler
+
+=test_norm_sym.py= defines the lensing weight functions symbolically and compiles
+all 8 basis kernels through the symbolic pipeline.
+
+#+begin_src python
+from sympy import Function, sqrt, pi, I
+from sym_utils.l12_sum import (
+    L12SumCompiler, wigner_3j, l, l1, l2, P
+)
+
+A, B = Function("A"), Function("B")
+zeta_p, zeta_m = 1, I
+c_phi, p_phi = 1, 1
+
+def gamma(l1, l2, l3):
+    return sqrt((2*l1 + 1) * (2*l2 + 1) * (2*l3 + 1) / (4*pi))
+
+def q_plus(c): return c * (1 + P) / 2
+def a(ell, s): return -sqrt((ell - s) * (ell + s + 1) / 2)
+def a_plus(ell): return a(ell, 2)
+def a_minus(ell): return a(ell, -2)
+
+def W_lens_0(l1, l_out, l2, c):
+    return -2 * a(l1, 0) * a(l2, 0) * q_plus(c) * gamma(l1, l_out, l2) * \
+           wigner_3j(l_out, l1, l2, 0, -1, 1)
+
+def W_lens_p(l1, l_out, l2, c):
+    term1 = a_plus(l2) * wigner_3j(l_out, l1, l2, -2, -1, 3)
+    term2 = a_minus(l2) * wigner_3j(l_out, l1, l2, -2, 1, 1)
+    return -zeta_p * q_plus(c) * gamma(l1, l_out, l2) * a(l1, 0) * (term1 + term2)
+
+def build_sigma(W1, W2, l_out, c1, c2):
+    expr = (1/(2*l_out + 1)) * W1(l1, l_out, l2, c1) * W2(l1, l_out, l2, c2)
+    return expr * A(l1) * B(l2)
+
+def build_gamma(W1, W2, l_out, c1, c2):
+    expr = (1/(2*l_out + 1)) * W1(l1, l_out, l2, c1) * W2(l2, l_out, l1, c2)
+    return expr * A(l1) * B(l2)
+
+# Build all 8 basis kernels symbolically
+kernels_lens = {}
+sigma_p_expr = build_sigma(W_lens_p, W_lens_p, l, c_phi, c_phi)
+gamma_p_expr = build_gamma(W_lens_p, W_lens_p, l, c_phi, c_phi)
+
+kernels_lens["S0"] = build_sigma(W_lens_0, W_lens_0, l, c_phi, c_phi)
+kernels_lens["Sp"] = sigma_p_expr
+kernels_lens["Sm"] = sigma_p_expr.subs(P, -P)
+kernels_lens["Sx"] = build_sigma(W_lens_0, W_lens_p, l, c_phi, c_phi)
+kernels_lens["G0"] = build_gamma(W_lens_0, W_lens_0, l, c_phi, c_phi)
+kernels_lens["Gp"] = gamma_p_expr
+kernels_lens["Gm"] = gamma_p_expr.subs(P, -P)
+kernels_lens["Gx"] = build_gamma(W_lens_0, W_lens_p, l, c_phi, c_phi)
+
+# Compile
+compiler = L12SumCompiler(lmax=100, rlmin=1, rlmax=100)
+kernels_lens_func = {}
+for name, expr in kernels_lens.items():
+    print(f"Building {name}...")
+    func, ir = compiler.build_and_compile(expr, args=[l, A, B])
+    kernels_lens_func[name] = func
+print("Compilation complete.")
+#+end_src
+
+Evaluate with test inputs:
+
+#+begin_src python
+import numpy as np
+
+ell = np.arange(101)
+A_test = ell**2
+B_test = ell**2
+for name, f in kernels_lens_func.items():
+    result = f(ell, A_test, B_test)
+    print(f"{name}: min={result.min():.3e}, max={result.max():.3e}")
+#+end_src
+
+* Running the Full Test
+
+#+begin_src shell :results output
+module load scipy-stack && python test_norm_sym.py
+#+end_src
+
+* Validation Against pytempura
+
+=comp_tempura.py= compares the hand-coded kernels against the established
+=pytempura= library for TT, TE, EE, and BB normalizations up to $\ell_\mathrm{max} = 4000$.
+
+#+begin_src shell :results output
+module load scipy-stack && python comp_tempura.py
+#+end_src
+
+* Quadratic Estimator Theory
+
+Reference: Toshiya Namikawa, "Computing quadratic estimator, delensing in
+curvedsky" ([[https://toshiyan.github.io/clpdoc/doc/Computing__Curved_sky_code.pdf][PDF]]).
+
+** Notation
+
+- $\Theta$: CMB temperature; $Q, U$: Stokes parameters; $E, B$: polarization modes
+- $\phi$: lensing potential; $\varpi$: curl mode
+- $\ell, m$: multipoles of CMB anisotropies (small letters)
+- $L, M$: multipoles of distortion fields (large letters)
+- Multipole factor: $\gamma_{\ell_1 \ell_2 \ell_3} = \sqrt{(2\ell_1+1)(2\ell_2+1)(2\ell_3+1)/(4\pi)}$
+- Parity indicator: $p_{\ell_1 \ell_2 \ell_3} = (-1)^{\ell_1+\ell_2+\ell_3}$
+- Parity-weighted coefficients: $q^{x,\pm}_{\ell_1 \ell_2 \ell_3} = c_x \frac{1 \pm c_x^2 (-1)^{\ell_1+\ell_2+\ell_3}}{2}$
+  where $c_\phi = 1$, $c_\varpi = -\mathrm{i}$
+- Spin raising/lowering: $a^\pm_\ell = a^{\pm 2}_\ell = -\sqrt{(\ell \mp 2)(\ell \pm 3)/2}$,
+  $a^0_\ell = -\sqrt{\ell(\ell+1)/2}$
+- $\zeta^+ = 1$, $\zeta^- = \mathrm{i}$
+
+** Lensing distortion and weight functions
+
+Lensing remaps CMB anisotropies as $X(\hat{n}) = X[\hat{n} + \boldsymbol{d}(\hat{n})]$, where the
+deflection field $\boldsymbol{d} = \nabla\phi + (\star\nabla)\varpi$. To first order, the
+distorted harmonic coefficients pick up off-diagonal correlations characterized by
+weight functions $W$.
+
+For temperature (spin-0), the lensing weight function is (Eq. 38):
+
+$$W^{x,0}_{\ell_1 \ell_2 \ell_3} = -2 a^0_{\ell_2} a^0_{\ell_3} q^{x,+}_{\ell_1 \ell_2 \ell_3} \gamma_{\ell_1 \ell_2 \ell_3} \begin{pmatrix} \ell_1 & \ell_2 & \ell_3 \\ 0 & 1 & -1 \end{pmatrix}$$
+
+For polarization (spin-$\pm 2$), it is (Eq. 62):
+
+$$W^{x,\pm}_{\ell_1 \ell_2 \ell_3} = -\zeta^\pm q^{x,\pm}_{\ell_1 \ell_2 \ell_3} \gamma_{\ell_1 \ell_2 \ell_3} a^0_{\ell_3} \left[ a^+_{\ell_2} \begin{pmatrix} \ell_1 & \ell_2 & \ell_3 \\ 2 & 1 & -3 \end{pmatrix} + c_x^2 a^-_{\ell_2} \begin{pmatrix} \ell_1 & \ell_2 & \ell_3 \\ 2 & -1 & -1 \end{pmatrix} \right]$$
+
+The distorted E/B modes are (Eqs. 59, 60, 71-73):
+
+$$\delta E_{\ell m} = \sum^{(\ell m)}_{LM\ell' m'} x_{LM} (E_{\ell' m'} W^{x,+}_{\ell L \ell'} + B_{\ell' m'} W^{x,-}_{\ell L \ell'})$$
+
+$$\delta B_{\ell m} = \sum^{(\ell m)}_{LM\ell' m'} x_{LM} (-E_{\ell' m'} W^{x,-}_{\ell L \ell'} + B_{\ell' m'} W^{x,+}_{\ell L \ell'})$$
+
+** Quadratic estimator
+
+The general QE for distortion field $x$ from observed fields $\hat{X}, \hat{Y}$ is
+(Eq. 80):
+
+$$[\hat{x}^{XY}_{LM}]^* = A^{x,(XY)}_L \sum_{\ell\ell'mm'} \begin{pmatrix} \ell & \ell' & L \\ m & m' & M \end{pmatrix} g^{x,(XY)}_{\ell L \ell'} \hat{X}_{\ell m} \hat{Y}_{\ell' m'}$$
+
+where $g$ is the estimator weight (Eq. 81):
+
+$$g^{x,(XY)}_{\ell L \ell'} = \frac{[f^{x,(XY)}_{\ell L \ell'}]^*}{\Delta^{XY} \hat{C}^{XX}_\ell \hat{C}^{YY}_{\ell'}}$$
+
+and $A_L$ is the normalization (Eq. 82):
+
+$$[A^{x,(XY)}_L]^{-1} = \frac{1}{2L+1} \sum_{\ell\ell'} f^{x,(XY)}_{\ell L \ell'} g^{x,(XY)}_{\ell L \ell'}$$
+
+$\Delta^{XX} = 2$, $\Delta^{EB} = \Delta^{TB} = 1$.
+
+** Weight functions $f$ for each estimator (Sec. 3.5)
+
+The weight functions that enter the normalization are (Eqs. 128-138):
+
+| Estimator     | $f^{x}_{\ell L \ell'}$                                                                        |
+|---------------+------------------------------------------------------------------------------------------------|
+| $\Theta\Theta$ | $W^{x,0}_{\ell L \ell'} C^{\Theta\Theta}_{\ell'} + p_x W^{x,0}_{\ell' L \ell} C^{\Theta\Theta}_\ell$ |
+| $\Theta E$    | $W^{x,0}_{\ell L \ell'} C^{\Theta E}_{\ell'} + p_x W^{x,+}_{\ell' L \ell} C^{\Theta E}_\ell$ |
+| $\Theta B$    | $p_x W^{x,-}_{\ell' L \ell} C^{\Theta E}_\ell$                                                |
+| $EE$          | $W^{x,+}_{\ell L \ell'} C^{EE}_{\ell'} + p_x W^{x,+}_{\ell' L \ell} C^{EE}_\ell$             |
+| $EB$          | $W^{x,-}_{\ell L \ell'} C^{BB}_{\ell'} + p_x W^{x,-}_{\ell' L \ell} C^{EE}_\ell$             |
+| $BB$          | $W^{x,+}_{\ell L \ell'} C^{BB}_{\ell'} + p_x W^{x,+}_{\ell' L \ell} C^{BB}_\ell$             |
+
+where $p_x = p_{\ell L \ell'}$ for even parity fields ($x = \phi, \epsilon$) and
+$p_x = -p_{\ell L \ell'}$ for odd parity ($x = \varpi, \alpha$).
+
+** Normalization via kernel functions (Sec. 5 & 6)
+
+The normalization $A_L^{-1}$ can be decomposed into $\Sigma$ and $\Gamma$ kernels
+(Eqs. 227-230):
+
+$$\Sigma^{(s),xy}_L[A,B] = \frac{1}{2L+1} \sum_{\ell\ell'} (W^{x,s}_{\ell L \ell'})^* W^{y,s}_{\ell L \ell'} A_\ell B_{\ell'}$$
+
+$$\Gamma^{(s),xy}_L[A,B] = \frac{1}{2L+1} \sum_{\ell\ell'} (W^{x,s}_{\ell L \ell'})^* W^{y,s}_{\ell' L \ell} A_\ell B_{\ell'}$$
+
+$$\Sigma^{(\times),xy}_L[A,B] = \frac{1}{2L+1} \sum_{\ell\ell'} W^{x,0}_{\ell L \ell'} W^{y,+}_{\ell L \ell'} A_\ell B_{\ell'}$$
+
+$$\Gamma^{(\times),xy}_L[A,B] = \frac{1}{2L+1} \sum_{\ell\ell'} W^{x,0}_{\ell L \ell'} W^{y,+}_{\ell' L \ell} A_\ell B_{\ell'}$$
+
+with $s = 0, \pm$. These are the 8 basis kernels implemented in =norm_lens.py=.
+Key symmetries: $\Sigma^{(s),xy}[A,B] = \Sigma^{(s),yx}[B,A]$ and
+$\Gamma^{(s),xy}[A,B] = \Gamma^{(s),yx}[B,A]$.
+
+** Explicit kernel functions in Wigner-d form (Sec. 6.1)
+
+The kernel functions are converted from Wigner 3j sums to integrals over
+Wigner-d products using the identity (Eq. 271):
+
+$$\int_{-1}^{1} d\mu\; d^{\ell_1}_{s_1,s'_1}(\beta) d^{\ell_2}_{s_2,s'_2}(\beta) d^{\ell_3}_{s_3,s'_3}(\beta) = 2 \begin{pmatrix} \ell_1 & \ell_2 & \ell_3 \\ s_1 & s_2 & s_3 \end{pmatrix} \begin{pmatrix} \ell_1 & \ell_2 & \ell_3 \\ s'_1 & s'_2 & s'_3 \end{pmatrix}$$
+
+with $s_1 + s_2 + s_3 = s'_1 + s'_2 + s'_3 = 0$. Defining
+$\xi^A_{mm'} = \sum_\ell \frac{2\ell+1}{4\pi} A_\ell d^\ell_{mm'}$ (Eq. 276), the
+lensing kernels become integrals of products of $\xi$ functions, e.g. (Eq. 278):
+
+$$\Sigma^{(0),x}_L[A,B] = \int_{-1}^{1} d\mu\; \pi L(L+1) \{\xi^A_{00} \xi^{B\cdot\ell'(\ell'+1)/2}_{11} d^L_{1,-1} + c_x^2 \xi^A_{00} \xi^{B\cdot\ell'(\ell'+1)/2}_{1,-1} d^L_{1,1} \}$$
+
+These integrals are evaluated numerically via Gauss-Legendre quadrature — this is
+what =GLQuad.cf_from_cl= and =GLQuad.cl_from_cf= implement.
+
+** Computing the unnormalized estimator (Sec. 4.3)
+
+The key computational step is forming the deflection field $v^\alpha(\hat{n})$ in
+real space as a product of filtered maps, then transforming back to harmonic
+space. For each estimator (Eqs. 158-165, 173-180):
+
+| Estimator       | $v^\alpha(\hat{n})$ (real-space product)                                                          |
+|-----------------+---------------------------------------------------------------------------------------------------|
+| $\Theta\Theta$  | $\bar\Theta (\Theta^+ + \mathrm{i}\Theta^-)$                                                     |
+| $\Theta E$      | $\frac{1}{2}[\bar{Q}^E(\Theta^+_1 - \Theta^+_3) + \bar{U}^E(\Theta^-_1 - \Theta^-_3) + \ldots]$ |
+| $\Theta B$      | $\frac{1}{2}[\bar{Q}^B(\Theta^-_1 - \Theta^-_3) + \bar{U}^B(\Theta^+_1 + \Theta^+_3) + \ldots]$ |
+| $EE$            | $\frac{1}{2}[\bar{Q}^E(\mathcal{E}^+_1 - \mathcal{E}^+_3) + \bar{U}^E(\mathcal{E}^-_1 - \mathcal{E}^-_3) + \ldots]$ |
+| $BB$            | Same as $EE$ with $\mathcal{E} \to \mathcal{B}$                                                   |
+| $EB$            | $EE$-type + $BB$-type cross terms                                                                  |
+
+where the spin fields $\Theta^\pm_{1,3}$, $\mathcal{E}^\pm_{1,3}$,
+$\mathcal{B}^\pm_{1,3}$ are filtered CMB maps transformed via spin-weighted
+spherical harmonics (Eqs. 169-171, 191):
+
+\begin{align}
+\Theta^+_1 + \mathrm{i}\Theta^-_1 &= -\sum_{\ell m} \bar\Theta_{\ell m} C^{\Theta E}_\ell \sqrt{\ell(\ell+1)} Y^1_{\ell m} \\
+\mathcal{E}^+_1 + \mathrm{i}\mathcal{E}^-_1 &= -\sum_{\ell m} \bar{E}_{\ell m} C^{EE}_\ell \sqrt{(\ell+2)(\ell-1)} Y^1_{\ell m}
+\end{align}
+
+The unnormalized estimator is then obtained by (Eq. 167):
+
+$$\bar\phi^{(\alpha)}_{\ell m} = -\frac{\sqrt{\ell(\ell+1)}}{2} \int d^2\hat{n}\; [(Y^1_{\ell m})^* v^\alpha - (Y^{-1}_{\ell m})^* (v^\alpha)^*]$$
+
+which corresponds to =map2alm_spin= with spin=1 followed by multiplication by
+$\sqrt{\ell(\ell+1)}$.
+
+** Reference implementation: falafel
+
+The [[https://github.com/simonsobs/falafel][falafel]] library (=/home/yguan/software/falafel=) implements the above
+estimator computation. Key functions in =falafel/qe.py=:
+
+- =gradient_spin(px, alm, mlmax, spin)=: applies $\sqrt{\ell(\ell+1)}$ in
+  harmonic space, then =alm2map_spin= to get the gradient in real space
+- =qe_spin_temperature_deflection=: $v^{\Theta\Theta} = -\nabla\bar{X} \cdot \bar{Y}$
+- =qe_spin_pol_deflection=: polarization deflection via spin-$\pm 2$ fields
+- =deflection_map_to_phi_curl_alms=: =map2alm_spin= then multiply by
+  $\sqrt{\ell(\ell+1)}$
+- =qe_all=: computes all estimators (TT, TE, TB, EE, EB, BB, mv, mvpol)
+
+The pipeline:
+1. Inverse-variance filter input alms: $\bar{X}_{\ell m} = \hat{X}_{\ell m} / \hat{C}^{XX}_\ell$
+2. Form response-weighted alms: $\bar{X} C^{XY}_\ell$
+3. Compute spin fields via =alm2map_spin= (real space)
+4. Multiply in real space to get deflection $v(\hat{n})$
+5. =map2alm_spin= back to harmonic space
+6. Multiply by $\sqrt{\ell(\ell+1)}$ for $\phi$ (or curl)
+7. Apply normalization $A_L$ (from =norm_lens.py= or =pytempura=)
+
+Falafel returns *unnormalized* estimates; normalization must be applied separately.
+
+* Architecture
+
+#+begin_example
+ Symbolic physics expression
+   (Wigner 3j products × Cl's × parity factor P)
+         │
+         ▼
+ ┌───────────────────────────────┐
+ │  sym_utils/sympy_bridge.py    │  Layer 2: sympy → atom tree
+ │  from_sympy                   │
+ └──────────────┬────────────────┘
+                │  AtomicFactor tree (atom.py, Layer 1)
+                ▼
+ ┌───────────────────────────────┐
+ │  sym_utils/l12_sum.py         │  Layer 5: Wigner-specific rewrites
+ │  _normalize_w3j_args          │    (w3j column permutation → P factor)
+ └──────────────┬────────────────┘
+                │
+                ▼
+ ┌───────────────────────────────┐
+ │  sym_utils/normal_form.py     │  Layer 3: flatten to sum-of-products
+ │  flatten                      │    (explicit distribute; no sympy)
+ └──────────────┬────────────────┘
+                │  list[FlatTerm]
+                ▼
+ ┌───────────────────────────────┐
+ │  sym_utils/quotient.py        │  Layer 4: reduce P^k mod (P²-1)
+ │  reduce_mod_power             │
+ └──────────────┬────────────────┘
+                │  P-reduced FlatTerms
+                ▼
+ ┌───────────────────────────────┐
+ │  sym_utils/l12_sum.py         │  Layer 5: FlatTerm → Term,
+ │  _flat_term_to_term,          │    w3j pair → wigd triple,
+ │  group + emit                 │    absorb P, canonicalize wigd,
+ └──────────────┬────────────────┘    group by (wigd_l, l_factor),
+                │                    emit numpy closure
+                ▼
+ ┌───────────────────────────────┐
+ │  glquad.py                    │  Gauss-Legendre quadrature
+ │  ├── fastgl.py                │    (Bogaert algorithm for nodes)
+ │  └── wignerd.py               │    JAX JIT Wigner-d recurrence
+ └──────────────┬────────────────┘
+                │
+                ▼
+    Numerical output: A_L normalization arrays
+                │
+                ▼
+ ┌───────────────────────────────┐
+ │  Estimator (falafel)          │  Unnormalized QE via real-space
+ │  qe.py                        │    multiplication + spin SHT
+ └──────────────┬────────────────┘
+                │  × A_L
+                ▼
+    Normalized lensing reconstruction φ_LM
+#+end_example
+
+* Validation
+
+Two complementary checks confirm the symbolic engine is correct:
+
+** Per-kernel: symbolic vs brute-force 3j summation
+
+=comp_sym_vs_hand.py= computes each of the 8 basis kernels
+$\Sigma^0, \Sigma^\pm, \Sigma^\times, \Gamma^0, \Gamma^\pm, \Gamma^\times$
+by two independent routes:
+
+1. The symbolic compiler pipeline (=sym_utils/l12_sum.py=) at
+   ~lmax=10, rlmin=1, rlmax=8~.
+2. A direct double-sum $\sum_{\ell_1, \ell_2}$ using =sympy.physics.wigner.wigner_3j=
+   (exact rational 3j symbols).
+
+Both paths produce the same values to ~$10^{-10}$ relative difference
+across every $L$. The ratio plot =comp_sym_vs_brute_ratio.png= is
+visually indistinguishable from unity for all 8 kernels:
+
+#+begin_center
+[[file:comp_sym_vs_brute_ratio.png]]
+#+end_center
+
+This is the strongest possible per-kernel test — brute-force enumeration
+with exact 3j arithmetic has no free parameters or approximations.
+
+** End-to-end: symbolic vs hand-coded (pytempura-validated) estimators
+
+=check_full_norm.py= combines the 8 symbolic kernels via the
+Toshiya-Namikawa recipe (see =tempura.jl=) to form the quadratic-estimator
+normalizations ~qtt, qte, qtb, qee, qbb, qeb~, and compares against the
+hand-coded implementations in =norm_lens.py= (which has been validated
+against =pytempura= at $\text{rtol} = 10^{-9}$ — see =comp_tempura.py=).
+
+At ~lmax=60, rlmin=2, rlmax=50~ with representative CMB-like spectra,
+all 6 estimators agree with the hand-coded reference to roughly
+machine precision ($\sim 10^{-14}$):
+
+| Estimator | Max $|\text{hand} - \text{sym}| / |\text{sym}|$ over $L \in [10, 60]$ |
+|-----------+---------------------------------------------------------------------|
+| qtt       | ~9 × 10^{-15}~                                                      |
+| qte       | ~1.3 × 10^{-14}~                                                    |
+| qtb       | ~2.1 × 10^{-15}~                                                    |
+| qee       | ~1.3 × 10^{-14}~                                                    |
+| qbb       | ~2.4 × 10^{-14}~                                                    |
+| qeb       | ~1.3 × 10^{-15}~                                                    |
+
+The relative-difference plot =comp_full_norm_reldiff.png= shows the
+agreement is flat across $L$:
+
+#+begin_center
+[[file:comp_full_norm_reldiff.png]]
+#+end_center
+
+And the absolute curves =comp_full_norm.png= overplot indistinguishably:
+
+#+begin_center
+[[file:comp_full_norm.png]]
+#+end_center
+
+Taken together: the symbolic compiler reproduces the per-triangle Wigner
+3j summation (brute-force ground truth) and, when composed into full
+estimator normalizations, matches the pytempura-validated hand-coded
+implementation at floating-point precision. Any future physics extension
+that goes through the same compiler inherits this level of trust.
+
+* Future Work
+
+Ideas for extending the symbolic engine beyond the current scope.
+
+** Pattern-based rewrite rules (Rule / Prewalk / Postwalk)
+
+The current engine uses *plain Python functions* for domain rewrites
+(e.g., =_normalize_w3j_args= in =l12_sum.py= is a =walk= callback that
+inspects node types). A previous prototype at
+[[https://github.com/guanyilun/scratch/tree/main/egraph]] explored a more
+declarative *string-pattern* style built on =sympy.unify=:
+
+#+begin_src python
+rule = Rule.parse("?a + ?b + c -> ?b * ?a + c")
+rule_post = Postwalk(rule)
+rule_post(expr)
+#+end_src
+
+That prototype implemented =Rule=, =Prewalk=, =Postwalk=, and was
+targeted at top-down / bottom-up traversals with automatic passthrough
+of mismatched subexpressions. TODOs listed there included: rule chaining,
+predicates on rewriters, and equation saturation.
+
+A port of the =Rule / Prewalk / Postwalk= design onto the atomic-tree
+engine would be ~80 lines as =sym_utils/patterns.py=:
+
+- =Rule.parse("?a + ?b -> ?b * ?a")= — slot variables prefixed with ~?~.
+- =match(pattern, target, slots) -> dict | None= — structural unification
+  over =AtomicFactor= trees; returns slot bindings or =None=.
+- =prewalk(rule)=, =postwalk(rule)= — traversals analogous to the prior
+  prototype, operating on atoms instead of sympy exprs.
+
+The one genuinely non-trivial piece is *AC (associative-commutative)
+matching for =Mul= and =Add=*: ~?a + ?b~ needs to match any two-way
+split of an =Add=. The prior prototype delegated this to =sympy.unify=;
+a native implementation would iterate over subset partitions.
+
+Tradeoffs:
+- Plain functions: easy to debug (Python breakpoint in =step=), full
+  Python for side conditions. More verbose.
+- String patterns: concise, declarative. Needs a parser layer; harder
+  to debug when =match= returns =None=; side conditions are awkward.
+
+Both approaches can coexist. Domain rules in =l12_sum.py= that need
+side conditions (e.g., the wigd canonicalization's case analysis on
+signs of ~(m, n)~) are probably better as plain functions; a ruleset of
+simple algebraic identities would read more cleanly as string patterns.
+
+** Equation saturation (egraph / e-classes)
+
+The prior =egraph= prototype also contained =core.py= with =ENode= /
+=EClass= / =EGraph= data structures — a partial implementation of
+*equality saturation* in the style of =egg= / =egglog=. This is a
+fundamentally different paradigm from the term-rewriter: instead of
+picking one canonical form, you maintain equivalence classes of
+expressions under a union-find, apply rules non-destructively until a
+fixed point (saturation), and then extract the lowest-cost
+representative.
+
+Full saturation would be useful for problems where:
+- Multiple equivalent forms exist and which is "best" depends on a cost
+  function (number of =cl2cf= calls, total polynomial degree, etc.).
+- Rules create loops of equivalent forms that a standard rewriter
+  would oscillate between.
+
+The =AtomicFactor= tree is a suitable term language for an egraph term.
+The =structural_key= is already the right hashable identity for e-node
+deduplication. But saturation itself (congruence closure, rebuild,
+extraction) is ~1000+ lines of new code and is a separate project from
+the current compiler.
+
+Relevant references:
+- egg: [[https://egraphs-good.github.io/]]
+- egglog: [[https://egraphs.org/egglog/]]
+- Prior prototype: [[https://github.com/guanyilun/scratch/tree/main/egraph]]
+
+* References
+
+- Namikawa, T. "Computing quadratic estimator, delensing in curvedsky"
+  [[https://toshiyan.github.io/clpdoc/doc/Computing__Curved_sky_code.pdf]]
+- falafel: [[https://github.com/simonsobs/falafel]]
+- pytempura: [[https://github.com/simonsobs/tempura]]

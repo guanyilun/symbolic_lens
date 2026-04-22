@@ -296,6 +296,64 @@ def compile_eb_native(terms, lmax, nside=2048):
     return compiled
 
 
+def compile_rot_eb_native(terms, lmax, nside=2048):
+    """Native backend for the CMB rotation (α) EB estimator.
+
+    Structurally different from lensing EB:
+      - spin-2 SHT on both E and B legs (no gradient/sqrt filters)
+      - scalar (spin-0) map2alm for the output α_LM
+      - no sqrt(L(L+1)) post-multiplier (L_factor = 1 in the recipe)
+
+    This primitive is NOT present in falafel.qe; it is assembled from
+    scratch from the inlined ``Pixelization`` primitives.  The symbolic
+    recipe (spin tuples, filters, coefficients) comes directly from the
+    rotation weight function ``W_rot_±`` defined in namikawa.py.
+    """
+    import healpy as hp
+    px = Pixelization(nside=nside)
+
+    def compiled(E_alm, B_alm, spectra):
+        E_alm = np.asarray(E_alm, dtype=np.complex128)
+        B_alm = np.asarray(B_alm, dtype=np.complex128)
+        ell = np.arange(lmax + 1, dtype=float)
+
+        # Accumulate the coefficient-weighted complex map in real space.  We
+        # can't take Re(prod) per term because the ±spin pair members have
+        # conjugate prod's with identical real parts — only their imaginary
+        # parts carry the signal that the ±I rotation coefficients extract.
+        total_map = None
+        for t in terms:
+            x_fl = _eval_atom(t.X_filter, ell, spectra).real.astype(np.float64)
+            y_fl = _eval_atom(t.Y_filter, ell, spectra).real.astype(np.float64)
+
+            Ef = hp.almxfl(E_alm, x_fl)
+            Bf = hp.almxfl(B_alm, y_fl)
+
+            palms_E = np.stack([Ef, Ef])
+            xmap_pair = px.alm2map_spin(palms_E, spin_alm=2, spin_transform=2,
+                                        ncomp=2, mlmax=lmax)
+            x_map = xmap_pair[0] if t.spin_X > 0 else xmap_pair[1]
+
+            palms_B = np.stack([1j * Bf, -1j * Bf])
+            ymap_pair = px.alm2map_spin(palms_B, spin_alm=2, spin_transform=2,
+                                        ncomp=2, mlmax=lmax)
+            y_map = ymap_pair[0] if t.spin_Y > 0 else ymap_pair[1]
+
+            prod = x_map * y_map
+            contrib = complex(t.coeff) * prod
+            total_map = contrib if total_map is None else total_map + contrib
+
+        # α is a real scalar field — take the real part of the summed map
+        # and apply the (constant) L_factor once.
+        L_fl = _eval_atom(terms[0].L_factor, ell, spectra).real.astype(np.float64)
+        alpha_map = total_map.real
+        alpha_alm = px.map2alm(np.asarray(alpha_map, dtype=np.float64), lmax=lmax)
+        return hp.almxfl(alpha_alm, L_fl)
+
+    compiled.n_terms = len(terms)
+    return compiled
+
+
 def compile_te_native(terms, lmax, nside=2048):
     """Native TE emitter. Mirrors estimator_backend.compile_te (pol half
     + temp half summed)."""

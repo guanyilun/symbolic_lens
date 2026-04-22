@@ -812,6 +812,19 @@ the lensing EB case — output spin is =0= (not =1=) and there is no
 distortion rather than a lensing gradient.  The engine derives this
 automatically from the symbolic =W=.
 
+*End-to-end rotation pipeline.*  =compile_rot_eb_native= in
+=estimator_native.py= executes the rotation estimator numerically using
+only the inlined SHT primitives.  This is the first pipeline that does
+not map onto a falafel template: a bespoke primitive
+(spin-2 alm2map_spin on both legs, real-space multiply, spin-0 map2alm)
+is assembled directly from the symbolic recipe.  The coefficient
+bookkeeping is simpler than the lensing cases because the ±ζ⁻ pair
+is combined in real space before the inverse transform, producing a
+real scalar α_LM from imaginary-coefficient atomic terms.
+=test_rotation_native.py= runs the pipeline on synthetic EE/BB alms
+and confirms that the output is pure-real with a plausible
+reconstruction-noise-like spectrum.
+
 ** Pattern-based rewrite rules (Rule / Prewalk / Postwalk)
 
 The current engine uses *plain Python functions* for domain rewrites

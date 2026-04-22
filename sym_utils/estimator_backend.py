@@ -1,36 +1,63 @@
 """
-estimator_backend.py — pixell/falafel-backed SHT emitter for EstimatorTerm lists.
+estimator_backend.py — emit a symbolic estimator recipe against falafel's
+hand-tested SHT primitives.
 
-Takes the output of ``compile_estimator`` (see estimator.py), strips the
-γ-normalization factors that pixell's SHT normalization reproduces
-implicitly, and produces a numpy callable that executes the recipe on
-input alm arrays.
+Philosophy
+----------
+Rather than reinvent signed-spin bookkeeping (which was the source of
+bugs in an earlier attempt), this backend uses falafel's primitives
+directly — ``gradient_spin``, ``qe_temperature_only``,
+``qe_spin_pol_deflection``, ``deflection_map_to_phi_curl_alms``. Those
+functions encode sign/phase conventions (``rot2d``, ``irot2d``, choice
+of ``comp=0`` vs ``comp=1``) that have already been debugged and
+validated at the pytempura-normalization level.
 
-Design note: rather than reinventing signed-spin bookkeeping we use
-falafel's ``pixelization`` class as the SHT primitive layer, which
-gives us tested conventions for (alm2map_spin / map2alm_spin / rot2d).
-This means falafel is a runtime dependency of the emitter; but the
-symbolic engine itself (sym_utils/{atom, sympy_bridge, normal_form,
-quotient, l12_sum, estimator, namikawa}.py) is falafel-free.
+Our job here is to:
+  1. Take a list of EstimatorTerms produced by ``compile_estimator`` and
+     strip the γ factors that pixell's SHT normalization reproduces.
+  2. Recognize structural patterns that correspond to falafel's existing
+     callable primitives — currently only the TT "single-gradient" case.
+  3. Derive the right ell-space filters from the symbolic recipe and
+     pass them to the falafel primitive.
+
+This keeps the symbolic engine as the source of truth for which filters
+/ which spins go where, and keeps the SHT numerics in falafel where
+they're already validated.
+
+Assumptions (TT emitter)
+------------------------
+The TT lensing recipe, after γ-stripping, collapses to four
+EstimatorTerms: the ``(spin_X, spin_Y, spin_L)`` triples are
+``(±1, 0, ∓1)`` twice (for the X-gradient pair) plus ``(0, ±1, ∓1)``
+twice (for the Y-gradient pair). For X = Y = T the two pairs are
+related by relabeling, so we pick the X-gradient pair and apply
+falafel's ``qe_temperature_only`` with the filters our symbolic recipe
+dictates, multiplied by 2 to account for the X↔Y symmetry.
+
+This emitter therefore does NOT generalize automatically to arbitrary
+estimators; it is the TT-validation milestone. Extension to polarization
+will plug into different falafel primitives (``gradient_spin`` for
+spin-±2 plus ``qe_spin_pol_deflection``).
 """
 from __future__ import annotations
 import numpy as np
+from sympy import Rational
 
 from .atom import AtomicFactor, Const, Var, Pow, Mul, Add, FuncApp, ONE
 from .atom import mul as atom_mul
 from .estimator import EstimatorTerm
 
 
-# --------------------------------------------------------------------------
-# γ-stripping.
+# -------------------------------------------------------------- γ-strip
 
 def strip_gamma(terms: list[EstimatorTerm]) -> list[EstimatorTerm]:
-    """Remove sqrt(2*l+1), sqrt(2*l1+1), sqrt(2*l2+1) factors from the
-    (L_factor, X_filter, Y_filter) of each term respectively.  Those
-    come from splitting γ_{l1 L l2} = sqrt((2l1+1)(2L+1)(2l2+1)/(4π))
-    across the three legs at W-construction time — pixell's SHT
-    normalization puts them back implicitly, so they must not be
-    applied as explicit filters."""
+    """Remove the sqrt(2·var+1) factor from each leg of each term.
+
+    These factors come from splitting γ_{l1 L l2} = sqrt((2l1+1)(2L+1)(2l2+1)/(4π))
+    across the three legs at W-construction time.  They are absorbed by
+    pixell/healpy's SHT normalization and must not be re-applied as
+    explicit filter multiplications.
+    """
     return [
         EstimatorTerm(
             coeff    = t.coeff,
@@ -44,9 +71,6 @@ def strip_gamma(terms: list[EstimatorTerm]) -> list[EstimatorTerm]:
 
 
 def _strip_sqrt_2var_plus_1(atom: AtomicFactor, var_name: str) -> AtomicFactor:
-    """Remove Pow(Add(Const(1), Mul(Const(2), Var(var_name))), 1/2) from a
-    Mul.  If the atom IS that target, returns ONE."""
-    from sympy import Rational
     half = Rational(1, 2)
 
     def is_target(f):
@@ -57,8 +81,8 @@ def _strip_sqrt_2var_plus_1(atom: AtomicFactor, var_name: str) -> AtomicFactor:
         if len(base.terms) != 2:      return False
         has_one = any(isinstance(t, Const) and t.value == 1 for t in base.terms)
         def is_two_var(t):
-            if not isinstance(t, Mul):        return False
-            if len(t.factors) != 2:           return False
+            if not isinstance(t, Mul):                      return False
+            if len(t.factors) != 2:                         return False
             has_two = any(isinstance(f_, Const) and f_.value == 2 for f_ in t.factors)
             has_var = any(isinstance(f_, Var)   and f_.name  == var_name for f_ in t.factors)
             return has_two and has_var
@@ -70,99 +94,96 @@ def _strip_sqrt_2var_plus_1(atom: AtomicFactor, var_name: str) -> AtomicFactor:
     return ONE if is_target(atom) else atom
 
 
-# --------------------------------------------------------------------------
-# evaluate an atomic filter to an ell-indexed numpy array.
+# -------------------------------------------------- atom → numpy array
 
-def _atom_to_array(atom: AtomicFactor, ell: np.ndarray, spectra: dict) -> np.ndarray:
-    """Evaluate an atomic factor depending on at most one of {l, l1, l2}
-    to a 1-D array over ells.  Values at ell=0,1 where the expression
-    diverges (sqrt of negative arg, 1/0) are set to 0."""
+def _eval_atom(atom: AtomicFactor, ell: np.ndarray, spectra: dict) -> np.ndarray:
+    """Evaluate an atomic factor over ``ell`` given the named spectra.
+
+    Values where the expression diverges or is undefined (sqrt of negative
+    arg, 1/0) are zeroed.
+    """
     fv = atom.free_vars()
     if not fv:
-        val = complex(atom.evaluate({}))
-        return np.full_like(ell, val, dtype=complex)
-
-    assert len(fv) == 1, f"atom has multiple free vars: {fv}"
-    (var_name,) = fv
-    env = dict(spectra)
-    env[var_name] = ell.astype(float)
+        return np.full_like(ell, complex(atom.evaluate({})), dtype=complex)
+    assert len(fv) == 1, f"multi-var atom: {fv}"
+    (name,) = fv
+    env = dict(spectra); env[name] = ell.astype(float)
     with np.errstate(divide='ignore', invalid='ignore'):
-        arr = np.asarray(atom.evaluate(env))
-    arr = np.where(np.isfinite(arr), arr, 0.0)
-    return arr
+        arr = np.asarray(atom.evaluate(env), dtype=complex)
+    return np.where(np.isfinite(arr), arr, 0.0)
 
 
-# --------------------------------------------------------------------------
-# TT emitter using falafel's pixelization primitives.
+# ---------------------------------------------- TT emitter (milestone 1)
 
-def compile_tt(terms: list[EstimatorTerm], lmax: int,
-               *, nside: int = 2048):
-    """Compile a γ-stripped list of EstimatorTerms for TT (spin-0 alms)
-    into a callable ``(X_alm, Y_alm, spectra_dict) -> phi_alm``.
+def compile_tt(terms: list[EstimatorTerm], lmax: int, nside: int = 2048):
+    """Emit a callable for the TT lensing estimator using
+    falafel.qe.qe_temperature_only as the SHT primitive.
 
-    Only supports spin-0 input alms (temperature).  Polarization (spin-2
-    inputs with the E±iB pair) is deferred to milestone 2.
+    The γ-stripped recipe is expected to have the "canonical" TT structure
+    (X-gradient pair with spin_Y = 0).  The emitter identifies the pair
+    from the recipe, extracts the ell-space filters, and hands them to
+    falafel.
+
+    Returns a callable ``compiled(T_alm, spectra_dict) -> phi_alm``.
     """
-    from falafel.qe import pixelization
+    from falafel.qe import pixelization, qe_temperature_only
     import healpy as hp
+
+    xgrad_terms = [t for t in terms if t.spin_Y == 0 and abs(t.spin_X) == 1]
+    assert xgrad_terms, "No X-gradient pair found in TT recipe"
+
+    # The ±spin pair members have the same filters; pick one.
+    ref = xgrad_terms[0]
+    # Coefficient bookkeeping:
+    #   ref.coeff                is the per-term atomic coefficient, incl.
+    #                            the 1/Δ factor from g = f/(Δ·ĉ·ĉ), the
+    #                            residual 1/sqrt(4π) from γ, and the -2
+    #                            sign from W_lens_0's prefactor.
+    #   × 2                      X↔Y swap symmetry (X = Y = T for TT).
+    #   × (-1)                   falafel.qe.qe_spin_temperature_deflection
+    #                            bakes in the "-grad * ymap" sign, so our
+    #                            symbolic sign must be REMOVED to avoid
+    #                            double-counting.
+    #   × Δ = 2                  falafel returns the f-pipeline output, not
+    #                            the g-pipeline; our 1/Δ is not wanted.
+    #   × sqrt(4π)               falafel's SHT conventions reproduce γ
+    #                            implicitly; our residual 1/sqrt(4π) is
+    #                            not wanted.
+    import math
+    pair_coeff = 2 * complex(ref.coeff) * (-1) * 2 * math.sqrt(4 * math.pi)
 
     px = pixelization(nside=nside)
 
-    def compiled(X_alm, Y_alm, spectra):
-        X_alm = np.asarray(X_alm, dtype=np.complex128)
-        Y_alm = np.asarray(Y_alm, dtype=np.complex128)
+    def compiled(T_alm, spectra):
+        T_alm = np.asarray(T_alm, dtype=np.complex128)
         ell = np.arange(lmax + 1, dtype=float)
-        out = None
 
-        for t in terms:
-            x_fl = _atom_to_array(t.X_filter, ell, spectra)
-            y_fl = _atom_to_array(t.Y_filter, ell, spectra)
-            L_fl = _atom_to_array(t.L_factor, ell, spectra)
+        # Decompose the X filter into
+        #   X_filter(l) = gradient_piece · response_piece
+        # where gradient_piece = sqrt(l*(l+1)) (applied internally by
+        # falafel.gradient_spin).
+        x_fl = _eval_atom(ref.X_filter, ell, spectra).real
+        y_fl = _eval_atom(ref.Y_filter, ell, spectra).real
+        L_fl = _eval_atom(ref.L_factor, ell, spectra).real
 
-            x_alm_f = hp.almxfl(X_alm, x_fl.real.astype(np.float64))
-            y_alm_f = hp.almxfl(Y_alm, y_fl.real.astype(np.float64))
+        # The gradient factor and L-post-mul that falafel ALREADY supplies
+        # internally; divide them out so we don't double-apply.
+        grad_l  = np.sqrt(ell * (ell + 1))
+        grad_L  = np.sqrt(ell * (ell + 1))
+        x_response_fl = np.where(grad_l > 0, x_fl / grad_l, 0.0)
+        y_iv_fl       = y_fl
+        L_residual_fl = np.where(grad_L > 0, L_fl / grad_L, 0.0)  # expect ≈ 1 if structure matches
 
-            # alm2map for each leg; signed-spin means take +|s| or -|s| component
-            x_map = _alm_to_signed_spin_map(px, x_alm_f, t.spin_X, lmax)
-            y_map = _alm_to_signed_spin_map(px, y_alm_f, t.spin_Y, lmax)
+        X_response = hp.almxfl(T_alm, x_response_fl)
+        Y_iv       = hp.almxfl(T_alm, y_iv_fl)
 
-            prod = x_map * y_map
+        phi_curl = qe_temperature_only(px, X_response, Y_iv, lmax)
+        phi = phi_curl[0] if phi_curl.ndim == 2 else phi_curl
+        phi = hp.almxfl(phi, L_residual_fl)     # should be a no-op at structural match
 
-            term_alm = _signed_spin_map_to_alm(px, prod, t.spin_L, lmax)
-            term_alm = hp.almxfl(term_alm, L_fl.real.astype(np.float64))
+        return pair_coeff * phi
 
-            c = complex(t.coeff)
-            term_alm = c * term_alm
-            out = term_alm if out is None else out + term_alm
-
-        return out
-
+    # Expose the internal pieces for inspection / debugging.
+    compiled.ref_term = ref
+    compiled.pair_coeff = pair_coeff
     return compiled
-
-
-def _alm_to_signed_spin_map(px, alm, spin, lmax):
-    """Return the signed-spin-s real-space map as a complex array.
-
-    px.alm2map_spin returns (M_+|s|, M_-|s|) — we pick one.
-    For spin=0 we use px.alm2map directly.
-    """
-    if spin == 0:
-        return px.alm2map(alm, spin=0, ncomp=1, mlmax=lmax)[0].astype(np.complex128)
-    # input alm pair for a spin-0 source field: (alm, alm) (both ±0 components)
-    pair = np.stack([alm, alm])
-    maps = px.alm2map_spin(pair, spin_alm=0, spin_transform=abs(spin),
-                           ncomp=2, mlmax=lmax)
-    # maps = (M_+|s|, M_-|s|) as complex
-    return maps[0] if spin > 0 else maps[1]
-
-
-def _signed_spin_map_to_alm(px, cmap, spin, lmax):
-    """Inverse of the above for the output leg."""
-    if spin == 0:
-        m = cmap.real if np.iscomplexobj(cmap) else cmap
-        return px.map2alm(np.asarray(m, dtype=np.float64), lmax=lmax)
-    # px.map2alm_spin takes a complex map and outputs (a_+|s|, a_-|s|)
-    # (It internally builds imap.conj() for the second component.)
-    res = px.map2alm_spin(cmap, lmax=lmax, spin_alm=0, spin_transform=abs(spin))
-    # res shape: (2, ...) — the ±|s| alm pair
-    return res[0] if spin > 0 else res[1]

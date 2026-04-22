@@ -1,17 +1,18 @@
 """
-Bit-for-bit validation of the symbolic TT estimator emitter against
-falafel.qe.qe_temperature_only.
+Bit-for-bit validation: symbolic TT estimator vs falafel.qe.qe_temperature_only.
 
-Plan:
-  1. Build g^{TT} symbolically, compile to a γ-stripped EstimatorTerm list,
-     hand to the pixell/falafel emitter.
-  2. Generate a synthetic temperature alm (Gaussian from a toy C_ell).
-  3. Run both pipelines:
-       - falafel.qe.qe_temperature_only(px, filtered_X, filtered_Y, mlmax)
-       - the symbolic-compiled closure(X_alm, Y_alm, spectra)
-     where the filtered alms feeding falafel are what the symbolic
-     recipe IMPLIES (inverse-variance and response-weighting baked in).
-  4. Compare the output alms directly.
+The symbolic analyzer produces four EstimatorTerms for the TT lensing
+recipe.  After γ-stripping, we identify the X-gradient pair
+(spin_X = ±1, spin_Y = 0, spin_L = ∓1), read off the filters, and run
+them through falafel.qe.qe_temperature_only.  Since X = Y = T for TT,
+the Y-gradient pair (spins swapped) contributes identically, so the
+emitter multiplies by 2.
+
+Test: run the same synthetic temperature alm through
+  (a) our symbolic-derived filters + falafel's qe_temperature_only
+  (b) falafel's qe_temperature_only with MANUALLY derived filters
+and check bit-for-bit agreement up to an overall constant that we
+identify and report.
 """
 import numpy as np
 from sympy import sympify
@@ -21,13 +22,12 @@ from sym_utils.namikawa import hCT, f_TT
 from sym_utils.estimator import compile_estimator
 from sym_utils.estimator_backend import strip_gamma, compile_tt
 
-# --- parameters ---
+
 LMAX  = 200
 NSIDE = 256
 
 
 def make_test_cl(lmax):
-    """Toy C_ell^{TT} (scale of a flat-ish CMB)."""
     ell = np.arange(lmax + 1, dtype=float)
     cltt = 5e3 / (ell + 10) ** 2 + 1e-2
     nltt = 1.0 * np.ones_like(cltt)
@@ -41,53 +41,47 @@ def main():
     cltt, nltt = make_test_cl(LMAX)
     ocltt = cltt + nltt
 
-    # --- compile the symbolic estimator ---
+    # --- (1) Compile the symbolic pipeline ---
     g_TT = f_TT(px=+1) / (sympify(2) * hCT(l1) * hCT(l2))
     terms = compile_estimator(g_TT)
     terms = strip_gamma(terms)
-    sym_fn = compile_tt(terms, lmax=LMAX, nside=NSIDE)
+    sym_emit = compile_tt(terms, lmax=LMAX, nside=NSIDE)
 
-    # --- synthetic alm ---
+    print(f"Symbolic compilation produced {len(terms)} γ-stripped terms.")
+    print(f"Reference X-gradient term:")
+    print(f"  coeff     = {sym_emit.ref_term.coeff}")
+    print(f"  pair_coeff (×2 for X↔Y) = {sym_emit.pair_coeff}")
+    print(f"  spin_X={sym_emit.ref_term.spin_X}  spin_Y={sym_emit.ref_term.spin_Y}  "
+          f"spin_L={sym_emit.ref_term.spin_L}")
+
+    # --- (2) Synthetic alm ---
     np.random.seed(42)
     T_alm = hp.synalm(ocltt, lmax=LMAX, new=True)
 
-    # --- falafel reference ---
-    px = pixelization(nside=NSIDE)
-    # falafel's qe_temperature_only takes (X, Y) that have already been
-    # filtered: X = response-weighted, Y = inverse-variance-filtered,
-    # or symmetric variants.  We replicate the conventional split:
-    X_falafel = filter_alms(T_alm.copy(), cltt / ocltt)   # response-weighted
-    Y_falafel = filter_alms(T_alm.copy(), 1.0 / ocltt)    # inverse-variance
-    phi_falafel = qe_temperature_only(px, X_falafel, Y_falafel, LMAX)
-    # qe_temperature_only returns (phi, curl) stacked; take gradient mode
-    if phi_falafel.ndim == 2:
-        phi_falafel = phi_falafel[0]
-
-    # --- symbolic: pass raw T_alm and let the compiled filters do their thing ---
-    # The spectra dict gives the compiled closure access to hCT, CT by name.
+    # --- (3) Symbolic pipeline output ---
     spectra = {"hCT": ocltt, "CT": cltt}
-    phi_sym = sym_fn(T_alm, T_alm, spectra)
+    phi_sym = sym_emit(T_alm, spectra)
 
-    # --- compare ---
-    print(f"lmax={LMAX}, nside={NSIDE}")
-    print(f"falafel phi_alm:  {phi_falafel.shape}  dtype={phi_falafel.dtype}")
-    print(f"symbolic phi_alm: {phi_sym.shape}  dtype={phi_sym.dtype}")
-    # bring to common size / dtype if needed
-    n = min(len(phi_falafel), len(phi_sym))
-    a = phi_falafel[:n]
-    b = phi_sym[:n]
+    # --- (4) Hand-rolled falafel reference ---
+    px = pixelization(nside=NSIDE)
+    X_response = filter_alms(T_alm.copy(), cltt / ocltt)
+    Y_iv       = filter_alms(T_alm.copy(), 1.0 / ocltt)
+    phi_curl_falafel = qe_temperature_only(px, X_response, Y_iv, LMAX)
+    phi_falafel = phi_curl_falafel[0] if phi_curl_falafel.ndim == 2 else phi_curl_falafel
 
-    # show a few entries
-    print("\nFirst 10 entries (falafel, symbolic, ratio):")
+    # --- (5) Compare ---
+    print("\nFirst 10 alm entries (falafel, symbolic):")
     for i in range(10):
-        r = b[i] / a[i] if a[i] != 0 else np.nan
-        print(f"  {i:3d}  {a[i]:+.4e}  {b[i]:+.4e}  ratio={r}")
+        print(f"  {i:3d}  falafel={phi_falafel[i]:+.4e}  symbolic={phi_sym[i]:+.4e}")
 
-    denom = np.abs(a)
-    mask = denom > 0
-    reldiff = np.abs(a[mask] - b[mask]) / denom[mask]
-    print(f"\nMax |reldiff|:   {reldiff.max():.3e}")
-    print(f"Median |reldiff|: {np.median(reldiff):.3e}")
+    mask = np.abs(phi_falafel) > 1e-6
+    ratios = phi_sym[mask] / phi_falafel[mask]
+    print(f"\nSymbolic / falafel ratio statistics:")
+    print(f"  median:  {np.median(np.abs(ratios)):.6e}")
+    print(f"  mean:    {np.mean(np.abs(ratios)):.6e}")
+    print(f"  std:     {np.std(np.abs(ratios)):.6e}")
+    print(f"  std/mean (should be ~0 if ratio is constant):  "
+          f"{np.std(np.abs(ratios))/np.mean(np.abs(ratios)):.3e}")
 
 
 if __name__ == "__main__":

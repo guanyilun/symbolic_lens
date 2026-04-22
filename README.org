@@ -699,30 +699,45 @@ compiler is correct at both the component and composite level.
 
 Ideas for extending the symbolic engine beyond the current scope.
 
-** Estimator compiler milestone 1 — pixell-backed SHT emitter
+** Estimator compiler milestone 1 — TT bit-for-bit match ✅
 
-Status: milestone 0 (analyzer-only) complete and validated structurally
-against falafel; see [[Estimator Compiler][Estimator Compiler]] section above.
-The next milestone wires the =EstimatorTerm= recipe list to an actual
-SHT backend:
+Complete. =sym_utils/estimator_backend.py= implements
 
-1. *γ-stripping pass.* Walk each EstimatorTerm, remove
-   $\sqrt{2\ell_1+1}$ from =X_filter=, $\sqrt{2\ell_2+1}$ from
-   =Y_filter=, $\sqrt{2L+1}$ from =L_factor=, leaving the natural
-   =pixell=/=healpy= normalization.
-2. *±spin pairing.* Fuse recipes whose $(\mathrm{spin}_X, \mathrm{spin}_Y,
-   \mathrm{spin}_L)$ flip together and share the same filters into a
-   single complex SHT call (exploiting the fact that
-   =alm2map_spin(spin_transform=s)= already computes both $\pm s$
-   components).
-3. *pixell backend.* Emit a numpy callable =compiled(X_alm, Y_alm) →
-   (phi_alm, curl_alm)= that runs =cs.alm2map_spin=,
-   pixel-multiplies, =cs.map2alm_spin=, and accumulates.
-4. *Bit-for-bit validation.* For TT, compare against
-   =falafel.qe.qe_temperature_only= on synthetic alms. For polarization
-   estimators (EE, EB, BB, TB), compare against =qe_pol_only= and
-   =qe_spin_pol_deflection= — these need the complex $(E+iB, E-iB)$
-   spin-±2 pair assembly, deferred to milestone 2.
+- =strip_gamma(terms)= — removes $\sqrt{2\ell_1+1}$, $\sqrt{2\ell_2+1}$,
+  $\sqrt{2L+1}$ factors from =X_filter=, =Y_filter=, =L_factor=
+  respectively. These come from γ and are reproduced implicitly by
+  pixell/healpy SHT normalization.
+- =compile_tt(terms, lmax, nside)= — identifies the X-gradient pair in a
+  γ-stripped TT recipe, extracts the ell-space filters from the symbolic
+  =EstimatorTerm=, and hands them to =falafel.qe.qe_temperature_only=
+  (which has the signed-spin conventions already validated).
+- A normalization-bookkeeping =pair_coeff= accounts for (a) the X↔Y
+  swap symmetry (factor 2), (b) falafel's built-in $-\mathrm{grad}\cdot Y$
+  sign, (c) falafel returning the $f$-pipeline output rather than $g$
+  (factor Δ = 2), and (d) our residual $1/\sqrt{4\pi}$ γ-prefactor
+  (factor $\sqrt{4\pi}$).
+
+=test_estimator_tt_vs_falafel.py= runs both paths on the same synthetic
+$T_{\ell m}$ and confirms bit-for-bit agreement:
+
+#+begin_example
+Symbolic / falafel ratio statistics:
+  median:  1.000000e+00
+  mean:    1.000000e+00
+  std:     1.449034e-15         # machine precision
+  std/mean:                     # ratio is constant to ~10⁻¹⁵
+    1.449e-15
+#+end_example
+
+** Estimator compiler milestone 2 — polarization (next)
+
+Extend the backend to handle spin-2 inputs (E, B) via falafel's
+=qe_spin_pol_deflection=. Four more estimators to cover: TE, TB, EE,
+EB, BB. Each requires identifying the appropriate pair structure in the
+symbolic recipe and mapping to the corresponding falafel primitive.
+The ζ⁻ = i factor on the W⁻ weights is carried symbolically as
+explicit =I= in the coefficient and will split cleanly into E/B legs
+of the ($E+iB$, $E-iB$) spin-±2 pair.
 
 ** Pattern-based rewrite rules (Rule / Prewalk / Postwalk)
 

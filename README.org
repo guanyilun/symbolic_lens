@@ -54,7 +54,9 @@ symbolic_lens/
 │   ├── sympy_bridge.py     # Layer 2: sympy → atom conversion
 │   ├── normal_form.py      # Layer 3: flatten to sum-of-products FlatTerm list
 │   ├── quotient.py         # Layer 4: reduce mod polynomial relations (e.g. P²=1)
-│   └── l12_sum.py          # Layer 5: CMB-specific compiler (W² summation → numerical)
+│   ├── l12_sum.py          # Layer 5a: kernel normalization compiler (W² → GL quadrature)
+│   ├── estimator.py        # Layer 5b: estimator compiler (single W → SHT recipe)
+│   └── namikawa.py         # Shared W^{x,0/±} and f^{XY} symbolic definitions
 │
 │ # Tests
 ├── test_norm_sym.py        # Symbolic compiler test for all 8 basis kernels
@@ -217,6 +219,73 @@ compiler = L12SumCompiler(lmax=10, rlmin=1, rlmax=10)
 f, terms = compiler.build_and_compile(expr, args=[l, A, B])
 # f is a numpy callable kernel(ell_out, A_array, B_array)
 #+end_src
+
+** Estimator Compiler (=sym_utils/estimator.py=)
+
+The estimator side compiles the quadratic-estimator weight
+$g^{XY}_{\ell L \ell'}$ (single Wigner 3j per term, unlike the
+$W^2$-style normalization) into a list of =EstimatorTerm= objects, each
+describing the real-space SHT recipe for one atomic contribution:
+
+#+begin_example
+ alm2map_spin(X * X_filter(l),   spin_transform = spin_X)
+ alm2map_spin(Y * Y_filter(l'),  spin_transform = spin_Y)
+ product in pixel space
+ map2alm_spin(product,           spin_transform = spin_L)
+ multiply output by L_factor(L)
+#+end_example
+
+The pipeline is identical to the kernel-side pipeline through layers 2-4
+(sympy → atom tree → canonicalize w3j args → flatten → reduce $P^2 = 1$).
+Layer 5 differs: instead of pairing two Wigner 3j's to form a Wigner-d
+triple (a /GL-quadrature/ kernel), each flat term has exactly one 3j
+whose m-values are extracted directly as signed SHT spins.
+
+=sym_utils/namikawa.py= provides the shared symbolic building blocks:
+weights $W^{x,0}$, $W^{x,+}$, $W^{x,-}$ in l-first 3j form, and =f_XY=
+builders for each of the 6 estimators (TT, TE, TB, EE, EB, BB). The
+imaginary unit on $\zeta^- = i$ (for TB/EB estimators) is carried
+through the coefficient.
+
+*γ-normalization convention (read carefully).* Each filter ends up
+containing $\sqrt{2\,\mathrm{var}+1}$ factors inherited from
+$\gamma_{\ell_1 L \ell_2} = \sqrt{(2\ell_1+1)(2L+1)(2\ell_2+1)/(4\pi)}$.
+The emitter /must not/ multiply these into the alm — standard
+=pixell=/=healpy= normalization reproduces $\gamma$ implicitly via the
+SHT identity
+
+$$\int d\Omega\; {}_s Y^*_{LM}\; {}_{s_1} Y_{\ell_1 m_1}\; {}_{s_2} Y_{\ell_2 m_2}
+  = \gamma_{\ell_1 L \ell_2}\, \begin{pmatrix}\ell_1 & \ell_2 & L\\ m_1 & m_2 & M\end{pmatrix}
+  \begin{pmatrix}\ell_1 & \ell_2 & L\\ -s_1 & -s_2 & s\end{pmatrix}$$
+
+so composing =alm2map_spin + alm2map_spin + (pixel multiply) + map2alm_spin=
+reproduces $\gamma$ for free. Residual $1/\sqrt{4\pi}$ pieces sit in the
+output coefficient; they are absorbed into the estimator's external
+$1/(2L+1)$ normalization (Namikawa Eq. 82).
+
+*Example usage (analyzer only; no SHTs executed):*
+
+#+begin_src python
+from sympy import sympify
+from sym_utils.l12_sum import l1, l2
+from sym_utils.namikawa import hCT, f_TT
+from sym_utils.estimator import compile_estimator, pretty_grouped
+
+g_TT = f_TT(px=+1) / (sympify(2) * hCT(l1) * hCT(l2))
+terms = compile_estimator(g_TT)
+print(pretty_grouped(terms, x_name="T", y_name="T"))
+# prints 4 atomic recipes matching falafel.qe.qe_temperature_only's structure
+#+end_src
+
+=test_estimator_all.py= dumps the derived SHT plans for all 6 lensing
+estimators; the per-leg =(filter, spin_transform)= structures match
+=falafel.qe='s hand-coded implementations (=gradient_spin=,
+=qe_spin_temperature_deflection=, =qe_spin_pol_deflection=).
+
+*Project status.* This is milestone 0 — analyzer only, no SHT library
+imported. The next milestone wires the =EstimatorTerm= list to a
+=pixell= backend and validates bit-for-bit against =falafel.qe= on
+synthetic alms. See [[Future Work]] below.
 
 * Lensing Normalization Kernels
 
@@ -629,6 +698,31 @@ compiler is correct at both the component and composite level.
 * Future Work
 
 Ideas for extending the symbolic engine beyond the current scope.
+
+** Estimator compiler milestone 1 — pixell-backed SHT emitter
+
+Status: milestone 0 (analyzer-only) complete and validated structurally
+against falafel; see [[Estimator Compiler][Estimator Compiler]] section above.
+The next milestone wires the =EstimatorTerm= recipe list to an actual
+SHT backend:
+
+1. *γ-stripping pass.* Walk each EstimatorTerm, remove
+   $\sqrt{2\ell_1+1}$ from =X_filter=, $\sqrt{2\ell_2+1}$ from
+   =Y_filter=, $\sqrt{2L+1}$ from =L_factor=, leaving the natural
+   =pixell=/=healpy= normalization.
+2. *±spin pairing.* Fuse recipes whose $(\mathrm{spin}_X, \mathrm{spin}_Y,
+   \mathrm{spin}_L)$ flip together and share the same filters into a
+   single complex SHT call (exploiting the fact that
+   =alm2map_spin(spin_transform=s)= already computes both $\pm s$
+   components).
+3. *pixell backend.* Emit a numpy callable =compiled(X_alm, Y_alm) →
+   (phi_alm, curl_alm)= that runs =cs.alm2map_spin=,
+   pixel-multiplies, =cs.map2alm_spin=, and accumulates.
+4. *Bit-for-bit validation.* For TT, compare against
+   =falafel.qe.qe_temperature_only= on synthetic alms. For polarization
+   estimators (EE, EB, BB, TB), compare against =qe_pol_only= and
+   =qe_spin_pol_deflection= — these need the complex $(E+iB, E-iB)$
+   spin-±2 pair assembly, deferred to milestone 2.
 
 ** Pattern-based rewrite rules (Rule / Prewalk / Postwalk)
 

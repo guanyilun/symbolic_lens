@@ -767,6 +767,42 @@ W⁺ term (T-through-CTE gradient, E plain → ~qe_pol_only~).  Our
 =compile_te= runs both halves and sums the alms, with independent
 bookkeeping coefficients for each half.
 
+** Estimator compiler milestone 3 — native SHT backend ✅
+
+=sym_utils/estimator_native.py= implements the same pipeline without a
+=falafel= runtime dependency.  The SHT bookkeeping (=rot2d=, =irot2d=,
+=Pixelization=, =gradient_spin=, =deflection_map_to_phi_curl_alms=,
+=qe_temperature_only=, =qe_pol_only=) is inlined, using =pixell= and
+=healpy= directly.  TT/EE/BB validated bit-for-bit against backend A:
+
+#+begin_example
+  TT      median=1.000000e+00   std/mean=4.1e-17  MATCH
+  EE      median=1.000000e+00   std/mean=4.1e-17  MATCH
+  BB      median=1.000000e+00   std/mean=4.2e-17  MATCH
+#+end_example
+
+*Latent falafel bug flagged during validation.*
+=falafel.qe.gradient_spin= initializes its per-ell filter as
+``fl = ells * 0``, which is an integer array because =ells= comes from
+=np.arange= without an explicit dtype.  Subsequent in-place float
+assignments (=sqrt((ells-1)*(ells+2))=, =sqrt((ells-2)*(ells+3))=) are
+silently truncated to integers, so the spin-±2 gradient filters are
+only accurate to the nearest integer.  Our native backend reproduces
+this exactly for regression fidelity; a one-line upstream fix
+(``fl = np.zeros_like(ells, dtype=float)``) would restore full precision
+on both backends simultaneously.
+
+*What milestone 3 unlocks.*  The native backend accepts arbitrary
+=EstimatorTerm= lists — not only the lensing templates for which
+falafel has hand-coded primitives.  The same compilation path
+(=compile_estimator → strip_gamma → compile_*_native=) applies to
+estimators for CMB rotation, patchy τ, point sources, or any new
+weight function =W= a user writes symbolically.  The falafel-delegating
+backend A stays as a regression oracle for the 6 lensing QEs.
+
+TE/TB/EB haven't been wired into the native backend yet but are
+mechanical extensions of the existing EE/BB pattern.
+
 ** Pattern-based rewrite rules (Rule / Prewalk / Postwalk)
 
 The current engine uses *plain Python functions* for domain rewrites

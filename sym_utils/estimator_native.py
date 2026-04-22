@@ -197,6 +197,226 @@ def _resolve_px(px=None, nside=None, shape=None, wcs=None):
     raise ValueError("compile_*_native needs one of: px, nside, shape+wcs")
 
 
+# ======================================================================
+# Generic emitter pipeline: fuse_spin_pairs → compile_native
+# ======================================================================
+#
+# Goal: accept any list[EstimatorTerm] from compile_estimator and execute
+# it via SHT primitives with NO per-estimator hand-coding and NO hand-tuned
+# pair_coeff.  The symbolic structure (spins, filters, coefficients)
+# dictates the execution; the user provides only the input alms packed as
+# (±|s| pair, spin_alm value) per leg.
+#
+# The ±spin pair fusion is the enabler: multiple EstimatorTerms that
+# differ only by the sign of (s_X, s_Y, s_L) collapse into one FusedPlan
+# so that a single pair of alm2map_spin / map2alm_spin calls handles all
+# of them.  Without fusion, a generic emitter can't combine the ±spin
+# conjugate products correctly — as seen in the rotation debugging.
+
+from dataclasses import dataclass
+
+
+def _sign(x):
+    return 0 if x == 0 else (1 if x > 0 else -1)
+
+
+@dataclass(frozen=True)
+class FusedPlan:
+    """One group of EstimatorTerms that share absolute spins, filters and
+    L-factor, differing only in the sign of ``(s_X, s_Y, s_L)``.
+
+    Fields:
+      abs_spin_X, abs_spin_Y, abs_spin_L : nonnegative int
+        Absolute values of the spin signatures.
+      X_filter, Y_filter, L_factor : AtomicFactor
+      coeffs : dict[tuple[int, int, int], complex]
+        Maps each sign signature ``(sign(s_X), sign(s_Y), sign(s_L))`` —
+        each entry in {-1, 0, +1} — to the summed complex coefficient of
+        all EstimatorTerms with that signature.
+    """
+    abs_spin_X: int
+    abs_spin_Y: int
+    abs_spin_L: int
+    X_filter: AtomicFactor
+    Y_filter: AtomicFactor
+    L_factor: AtomicFactor
+    coeffs: dict
+
+
+def fuse_spin_pairs(terms):
+    """Group a list of EstimatorTerms into FusedPlans by
+    (|s_X|, |s_Y|, |s_L|, structural filter keys).
+
+    Terms that differ only in sign(s_*) are merged into the same
+    FusedPlan; their coefficients are recorded against the sign
+    signature.  Within a group, coefficients for the same signature
+    are summed (e.g., from independent (1+P)/2 expansions producing
+    the same effective atomic term)."""
+    from collections import defaultdict
+    groups = defaultdict(lambda: {"coeffs": defaultdict(lambda: 0j), "meta": None})
+    for t in terms:
+        absX, absY, absL = abs(t.spin_X), abs(t.spin_Y), abs(t.spin_L)
+        key = (absX, absY, absL,
+               t.X_filter.structural_key(),
+               t.Y_filter.structural_key(),
+               t.L_factor.structural_key())
+        sig = (_sign(t.spin_X), _sign(t.spin_Y), _sign(t.spin_L))
+        groups[key]["coeffs"][sig] += complex(t.coeff)
+        if groups[key]["meta"] is None:
+            groups[key]["meta"] = (absX, absY, absL,
+                                    t.X_filter, t.Y_filter, t.L_factor)
+
+    plans = []
+    for g in groups.values():
+        aX, aY, aL, xf, yf, Lf = g["meta"]
+        plans.append(FusedPlan(aX, aY, aL, xf, yf, Lf, dict(g["coeffs"])))
+    return plans
+
+
+# -------- input-alm-pair constructors (convenience) --------
+
+def scalar_pair(alm):
+    """Pack a scalar (spin-0) alm as a ±0 pair.
+
+    Returns ``((alm, alm), spin_alm=0)`` for direct use in compile_native.
+    Use for temperature (T) or any spin-0 field."""
+    alm = np.asarray(alm, dtype=np.complex128)
+    return np.stack([alm, alm]), 0
+
+
+def pol_E_pair(E_alm):
+    """Pack a pure-E polarization alm as a ±2 pair.  Spin_alm = 2."""
+    E_alm = np.asarray(E_alm, dtype=np.complex128)
+    return np.stack([E_alm, E_alm]), 2
+
+
+def pol_B_pair(B_alm):
+    """Pack a pure-B polarization alm as a ±2 pair.  Spin_alm = 2."""
+    B_alm = np.asarray(B_alm, dtype=np.complex128)
+    return np.stack([1j * B_alm, -1j * B_alm]), 2
+
+
+def pol_EB_pair(E_alm, B_alm):
+    """Pack a polarization (E, B) pair as the ±2 alm pair."""
+    E = np.asarray(E_alm, dtype=np.complex128)
+    B = np.asarray(B_alm, dtype=np.complex128)
+    return np.stack([E + 1j * B, E - 1j * B]), 2
+
+
+# -------- the generic emitter --------
+
+def compile_native(terms, lmax, *, px=None, nside=None, shape=None, wcs=None):
+    """Compile EstimatorTerms into a generic callable.
+
+    Returns a function with signature::
+
+        result = emit(X_input, Y_input, spectra)
+
+    where ``X_input`` and ``Y_input`` are 2-tuples
+    ``(alm_pair, spin_alm)`` as produced by ``scalar_pair``,
+    ``pol_E_pair``, ``pol_B_pair`` or ``pol_EB_pair``.
+
+    The output ``result`` is a dict keyed by output-channel sign:
+
+      * abs_spin_L == 0:  ``{0: scalar_alm}``
+      * abs_spin_L  > 0:  ``{+1: a_plus_alm, -1: a_minus_alm}``
+
+    Status
+    ------
+    - **abs_spin_L == 0** (scalar output, e.g. rotation α, source,
+      patchy τ): works cleanly.  Output differs from the corresponding
+      hand-coded emitter by a CONSTANT overall factor
+      (absorbed γ-residual and Δ normalization); the relationship is
+      documented per estimator in the hand-coded ``pair_coeff``.
+    - **abs_spin_L > 0** (phi/curl output, e.g. lensing TT/EE/BB/TB/EB/TE):
+      currently NOT bit-for-bit with hand-coded.  The ±spin pair
+      members on the X/Y legs feed different map2alm_spin(spin=aL)
+      channels in a way that doesn't decompose into a single global
+      sign convention — the hand-coded path uses ONE complex SHT call
+      per estimator and extracts phi/curl via gradient/curl modes; the
+      generic per-term path currently breaks this coupling.  See
+      ``test_generic_emitter.py`` for the regression; for lensing
+      continue to use the hand-coded ``compile_{tt,ee,bb,tb,eb,te}_native``.
+    """
+    import healpy as hp
+
+    px = _resolve_px(px, nside, shape, wcs)
+    fused = fuse_spin_pairs(terms)
+
+    def emit(X_input, Y_input, spectra):
+        X_pair, X_spin_alm = X_input
+        Y_pair, Y_spin_alm = Y_input
+        X_pair = np.asarray(X_pair, dtype=np.complex128)
+        Y_pair = np.asarray(Y_pair, dtype=np.complex128)
+        ell = np.arange(lmax + 1, dtype=float)
+
+        # Output accumulators, keyed by output-channel sign.
+        outputs = {}
+
+        for plan in fused:
+            x_fl = _eval_atom(plan.X_filter, ell, spectra).real.astype(np.float64)
+            y_fl = _eval_atom(plan.Y_filter, ell, spectra).real.astype(np.float64)
+            L_fl = _eval_atom(plan.L_factor, ell, spectra).real.astype(np.float64)
+
+            Xf = np.stack([hp.almxfl(X_pair[0], x_fl),
+                           hp.almxfl(X_pair[1], x_fl)])
+            Yf = np.stack([hp.almxfl(Y_pair[0], y_fl),
+                           hp.almxfl(Y_pair[1], y_fl)])
+
+            X_maps = _alm_to_signed_pair(px, Xf, X_spin_alm,
+                                          plan.abs_spin_X, lmax)
+            Y_maps = _alm_to_signed_pair(px, Yf, Y_spin_alm,
+                                          plan.abs_spin_Y, lmax)
+
+            # Per-term execution: each atomic term runs its own SHT pipeline
+            # and the coefficient's sign signature selects the output channel.
+            # Sign convention: our symbolic sX is the 3j-argument-m value;
+            # the corresponding pick from the ±|s| pair is M_{sX} directly
+            # (sX ≥ 0 → first element M_+, sX < 0 → second element M_-).
+            for (sX, sY, sL), coeff in plan.coeffs.items():
+                Mx = X_maps[0] if sX >= 0 else X_maps[1]
+                My = Y_maps[0] if sY >= 0 else Y_maps[1]
+                prod = complex(coeff) * Mx * My
+
+                if plan.abs_spin_L == 0:
+                    m = prod.real
+                    if px.hpix:
+                        alm = px.map2alm(np.asarray(m, dtype=np.float64), lmax=lmax)
+                    else:
+                        from pixell import enmap
+                        alm = px.map2alm(enmap.enmap(m, px.wcs), lmax=lmax)
+                    alm = hp.almxfl(alm, L_fl)
+                    outputs[0] = alm if 0 not in outputs else outputs[0] + alm
+                else:
+                    alm_pair = px.map2alm_spin(prod, lmax=lmax,
+                                                spin_alm=0,
+                                                spin_transform=plan.abs_spin_L)
+                    pick = alm_pair[0] if sL >= 0 else alm_pair[1]
+                    pick = hp.almxfl(pick, L_fl)
+                    outputs[sL] = pick if sL not in outputs else outputs[sL] + pick
+
+        return outputs
+
+    emit.fused_plans = fused
+    return emit
+
+
+def _alm_to_signed_pair(px, filtered_pair, spin_alm_in, abs_spin_out, lmax):
+    """Produce (M_+|s_out|, M_-|s_out|) complex-map pair from a filtered alm pair.
+
+    For abs_spin_out = 0, returns (scalar_map, scalar_map) — the ±0
+    components are identical.
+    """
+    if abs_spin_out == 0:
+        m = px.alm2map(filtered_pair[0], spin=0, ncomp=1, mlmax=lmax)[0]
+        m = m.astype(np.complex128)
+        return (m, m)
+    pair_map = px.alm2map_spin(filtered_pair, spin_alm=spin_alm_in,
+                               spin_transform=abs_spin_out,
+                               ncomp=2, mlmax=lmax)
+    return (pair_map[0], pair_map[1])
+
+
 # =====================================================================
 # Compile helpers — reuse the milestone-2 emitters but swap the falafel
 # primitives for the inlined equivalents above.  Every emitter accepts
@@ -401,6 +621,7 @@ def compile_source_tt_native(terms, lmax, *, nside=None, shape=None, wcs=None, p
         src_alm = px.map2alm_spin(prod, lmax, 0, 0)
         # map2alm_spin with spin_alm=0, spin_transform=0 returns a
         # pair (a+, a-).  For the scalar (spin-0) output we take res[0].
+        src_alm = np.asarray(src_alm)
         src_alm = src_alm[0] if src_alm.ndim == 2 else src_alm
         return pair_coeff * src_alm
 

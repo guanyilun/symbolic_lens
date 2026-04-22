@@ -1,7 +1,6 @@
 #%%
 from sympy import Function, sqrt, pi, I
 from sym_utils.l12_sum import *
-from sym_utils.rewrite import *
 
 A, B = Function("A"), Function("B")
 zeta_p, zeta_m = 1, I
@@ -16,13 +15,13 @@ def a_plus(ell): return a(ell, 2)
 def a_minus(ell): return a(ell, -2)
 
 def W_lens_0(l1, l_out, l2, c):
-    return -2 * a(l1, 0) * a(l2, 0) * q_plus(c) * gamma(l1, l_out, l2) * \
+    return -2 * a(l_out, 0) * a(l2, 0) * q_plus(c) * gamma(l1, l_out, l2) * \
            wigner_3j(l_out, l1, l2, 0, -1, 1)
 
 def W_lens_p(l1, l_out, l2, c):
     term1 = a_plus(l2) * wigner_3j(l_out, l1, l2, -2, -1, 3)
-    term2 = a_minus(l2) * wigner_3j(l_out, l1, l2, -2, 1, 1)
-    return -zeta_p * q_plus(c) * gamma(l1, l_out, l2) * a(l1, 0) * (term1 + term2)
+    term2 = c**2 * a_minus(l2) * wigner_3j(l_out, l1, l2, -2, 1, 1)
+    return -zeta_p * q_plus(c) * gamma(l1, l_out, l2) * a(l_out, 0) * (term1 + term2)
 
 def build_sigma(W1, W2, l_out, c1, c2):
     expr = (1/(2*l_out + 1)) * W1(l1, l_out, l2, c1) * W2(l1, l_out, l2, c2)

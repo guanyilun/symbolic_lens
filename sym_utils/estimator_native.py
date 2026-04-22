@@ -436,6 +436,22 @@ def compile_native(terms, lmax, *, px=None, nside=None, shape=None, wcs=None):
                         plan_factor = -plan_factor
                 else:
                     plan_factor = -1j * plan_factor
+                # Cross-half sign rule (TE-pol-like plans, W^+ only).  A W^+
+                # plan where the X input is scalar (spin_alm_X=0) but the X
+                # output is |sX|>0 AND the Y input is polarization
+                # (|spin_alm_Y|=2, |sY|>0) originates from a column-swapped
+                # W_lens_p (as in f_TE's pol half:
+                # W_lens_p(l2, l, l1) · CTE(l1)).  The symbolic engine
+                # absorbs the column swap via P²=1, but the resulting per-
+                # plan sign convention is opposite to hand-coded
+                # qe_pol_only's sign convention.  Flip to align with the
+                # temp half (which matches hand-coded without flip).
+                # Restricted to W^+: for W^- estimators like TB the same
+                # spin pattern has the correct sign already (verified
+                # empirically: TB xcorr=+1 without this rule).
+                if (is_W_plus and X_spin_alm == 0 and plan.abs_spin_X > 0
+                        and abs(Y_spin_alm) == 2 and plan.abs_spin_Y > 0):
+                    plan_factor = -plan_factor
             for (sX, sY, sL), coeff in plan.coeffs.items():
                 sX_eff = -sX if flip_X else sX
                 sY_eff = -sY if flip_Y else sY

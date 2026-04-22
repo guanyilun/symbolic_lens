@@ -54,42 +54,42 @@ def main():
     terms = strip_gamma(compile_estimator(g))
     spec = {"hCT": ocltt, "CT": cltt}
     compare(compile_tt       (terms, LMAX, NSIDE)(T, spec),
-            compile_tt_native(terms, LMAX, NSIDE)(T, spec), "TT")
+            compile_tt_native(terms, LMAX, nside=NSIDE)(T, spec), "TT")
 
     # EE
     g = f_EE(px=+1) / (sympify(2) * hCE(l1) * hCE(l2))
     terms = strip_gamma(compile_estimator(g))
     spec = {"hCE": oclee, "CE": clee}
     compare(compile_ee       (terms, LMAX, NSIDE)(E, spec),
-            compile_ee_native(terms, LMAX, NSIDE)(E, spec), "EE")
+            compile_ee_native(terms, LMAX, nside=NSIDE)(E, spec), "EE")
 
     # BB
     g = f_BB(px=+1) / (sympify(2) * hCB(l1) * hCB(l2))
     terms = strip_gamma(compile_estimator(g))
     spec = {"hCB": oclbb, "CB": clbb}
     compare(compile_bb       (terms, LMAX, NSIDE)(B, spec),
-            compile_bb_native(terms, LMAX, NSIDE)(B, spec), "BB")
+            compile_bb_native(terms, LMAX, nside=NSIDE)(B, spec), "BB")
 
     # TB
     g = f_TB(px=+1) / (hCT(l1) * hCB(l2))
     terms = strip_gamma(compile_estimator(g))
     spec = {"hCT": ocltt, "hCB": oclbb, "CTE": clte}
     compare(compile_tb       (terms, LMAX, NSIDE)(T, B, spec),
-            compile_tb_native(terms, LMAX, NSIDE)(T, B, spec), "TB")
+            compile_tb_native(terms, LMAX, nside=NSIDE)(T, B, spec), "TB")
 
     # EB
     g = f_EB(px=+1) / (hCE(l1) * hCB(l2))
     terms = strip_gamma(compile_estimator(g))
     spec = {"hCE": oclee, "hCB": oclbb, "CE": clee, "CB": np.zeros_like(clee)}
     compare(compile_eb       (terms, LMAX, NSIDE)(E, B, spec),
-            compile_eb_native(terms, LMAX, NSIDE)(E, B, spec), "EB")
+            compile_eb_native(terms, LMAX, nside=NSIDE)(E, B, spec), "EB")
 
     # TE
     g = f_TE(px=+1) / (hCT(l1) * hCE(l2))
     terms = strip_gamma(compile_estimator(g))
     spec = {"hCT": ocltt, "hCE": oclee, "CTE": clte}
     compare(compile_te       (terms, LMAX, NSIDE)(T, E, spec),
-            compile_te_native(terms, LMAX, NSIDE)(T, E, spec), "TE")
+            compile_te_native(terms, LMAX, nside=NSIDE)(T, E, spec), "TE")
 
 
 if __name__ == "__main__":

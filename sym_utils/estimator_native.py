@@ -184,12 +184,26 @@ def qe_pol_only(px, X_E, X_B, Y_E, Y_B, mlmax):
     return _deflection_to_phi_curl(px, _qe_spin_pol_defl(px, X_E, X_B, Y_E, Y_B, mlmax), mlmax)
 
 
+def _resolve_px(px=None, nside=None, shape=None, wcs=None):
+    """Build a Pixelization from whichever of (px, nside, shape+wcs) the
+    caller supplied.  Enables CAR and HEALPix side-by-side across all
+    native emitters with a single signature."""
+    if px is not None:
+        return px
+    if nside is not None:
+        return Pixelization(nside=nside)
+    if shape is not None and wcs is not None:
+        return Pixelization(shape=shape, wcs=wcs)
+    raise ValueError("compile_*_native needs one of: px, nside, shape+wcs")
+
+
 # =====================================================================
 # Compile helpers — reuse the milestone-2 emitters but swap the falafel
-# primitives for the inlined equivalents above.
+# primitives for the inlined equivalents above.  Every emitter accepts
+# either nside (HEALPix) or shape+wcs (CAR) or a pre-built px object.
 # =====================================================================
 
-def compile_tt_native(terms, lmax, nside=2048):
+def compile_tt_native(terms, lmax, *, nside=None, shape=None, wcs=None, px=None):
     """Native TT emitter — same logic as estimator_backend.compile_tt but
     without falafel at runtime."""
     import healpy as hp
@@ -199,7 +213,7 @@ def compile_tt_native(terms, lmax, nside=2048):
     ref = xgrad_terms[0]
     pair_coeff = 2 * complex(ref.coeff) * (-1) * 2 * math.sqrt(4 * math.pi)
 
-    px = Pixelization(nside=nside)
+    px = _resolve_px(px, nside, shape, wcs)
 
     def compiled(T_alm, spectra):
         T_alm = np.asarray(T_alm, dtype=np.complex128)
@@ -225,7 +239,8 @@ def compile_tt_native(terms, lmax, nside=2048):
     return compiled
 
 
-def compile_pol_same_field_native(terms, lmax, nside, field):
+def compile_pol_same_field_native(terms, lmax, field, *,
+                                  nside=None, shape=None, wcs=None, px=None):
     """Native EE/BB emitter."""
     import healpy as hp
     import math
@@ -235,7 +250,7 @@ def compile_pol_same_field_native(terms, lmax, nside, field):
     X_resp, Y_resp, L_atom, coeff_ref = _extract_pol_response(terms, "X", "l1")
     pair_coeff = 2 * complex(coeff_ref) * (-1) * 2 * math.sqrt(4*math.pi) * 2
 
-    px = Pixelization(nside=nside)
+    px = _resolve_px(px, nside, shape, wcs)
 
     def compiled(alm, spectra):
         alm = np.asarray(alm, dtype=np.complex128)
@@ -259,15 +274,17 @@ def compile_pol_same_field_native(terms, lmax, nside, field):
     return compiled
 
 
-def compile_ee_native(terms, lmax, nside=2048):
-    return compile_pol_same_field_native(terms, lmax, nside, 'E')
+def compile_ee_native(terms, lmax, *, nside=None, shape=None, wcs=None, px=None):
+    return compile_pol_same_field_native(terms, lmax, 'E',
+                                         nside=nside, shape=shape, wcs=wcs, px=px)
 
 
-def compile_bb_native(terms, lmax, nside=2048):
-    return compile_pol_same_field_native(terms, lmax, nside, 'B')
+def compile_bb_native(terms, lmax, *, nside=None, shape=None, wcs=None, px=None):
+    return compile_pol_same_field_native(terms, lmax, 'B',
+                                         nside=nside, shape=shape, wcs=wcs, px=px)
 
 
-def compile_tb_native(terms, lmax, nside=2048):
+def compile_tb_native(terms, lmax, *, nside=None, shape=None, wcs=None, px=None):
     """Native TB emitter. Mirrors estimator_backend.compile_tb."""
     import healpy as hp
     import math
@@ -276,7 +293,7 @@ def compile_tb_native(terms, lmax, nside=2048):
     X_resp, Y_resp, L_atom, coeff_ref = _extract_pol_response(terms, "X", "l1")
     pair_coeff = complex(coeff_ref) * (-1) * 1 * math.sqrt(4*math.pi) * 2 * (-1j) * 2
 
-    px = Pixelization(nside=nside)
+    px = _resolve_px(px, nside, shape, wcs)
 
     def compiled(T_alm, B_alm, spectra):
         T_alm = np.asarray(T_alm, dtype=np.complex128)
@@ -298,7 +315,7 @@ def compile_tb_native(terms, lmax, nside=2048):
     return compiled
 
 
-def compile_eb_native(terms, lmax, nside=2048):
+def compile_eb_native(terms, lmax, *, nside=None, shape=None, wcs=None, px=None):
     """Native EB emitter. Mirrors estimator_backend.compile_eb."""
     import healpy as hp
     import math
@@ -311,7 +328,7 @@ def compile_eb_native(terms, lmax, nside=2048):
     L_atom = ref.L_factor
     pair_coeff = complex(ref.coeff) * (-1) * 1 * math.sqrt(4*math.pi) * 2 * (-1j) * 2
 
-    px = Pixelization(nside=nside)
+    px = _resolve_px(px, nside, shape, wcs)
 
     def compiled(E_alm, B_alm, spectra):
         E_alm = np.asarray(E_alm, dtype=np.complex128)
@@ -354,7 +371,7 @@ def compile_rot_eb_native(terms, lmax, nside=None, shape=None, wcs=None, px=None
     import healpy as hp
     if px is None:
         if nside is not None:
-            px = Pixelization(nside=nside)
+            px = _resolve_px(px, nside, shape, wcs)
         else:
             px = Pixelization(shape=shape, wcs=wcs)
 
@@ -408,7 +425,7 @@ def compile_rot_eb_native(terms, lmax, nside=None, shape=None, wcs=None, px=None
     return compiled
 
 
-def compile_te_native(terms, lmax, nside=2048):
+def compile_te_native(terms, lmax, *, nside=None, shape=None, wcs=None, px=None):
     """Native TE emitter. Mirrors estimator_backend.compile_te (pol half
     + temp half summed)."""
     import healpy as hp
@@ -430,7 +447,7 @@ def compile_te_native(terms, lmax, nside=2048):
     temp_L_atom     = temp_ref.L_factor
     temp_pair_coeff = complex(temp_ref.coeff) * (-1) * 1 * math.sqrt(4*math.pi) * 2
 
-    px = Pixelization(nside=nside)
+    px = _resolve_px(px, nside, shape, wcs)
 
     def compiled(T_alm, E_alm, spectra):
         T_alm = np.asarray(T_alm, dtype=np.complex128)

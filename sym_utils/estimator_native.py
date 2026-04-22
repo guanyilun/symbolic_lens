@@ -228,3 +228,129 @@ def compile_ee_native(terms, lmax, nside=2048):
 
 def compile_bb_native(terms, lmax, nside=2048):
     return compile_pol_same_field_native(terms, lmax, nside, 'B')
+
+
+def compile_tb_native(terms, lmax, nside=2048):
+    """Native TB emitter. Mirrors estimator_backend.compile_tb."""
+    import healpy as hp
+    import math
+    from .estimator_backend import _extract_pol_response
+
+    X_resp, Y_resp, L_atom, coeff_ref = _extract_pol_response(terms, "X", "l1")
+    pair_coeff = complex(coeff_ref) * (-1) * 1 * math.sqrt(4*math.pi) * 2 * (-1j) * 2
+
+    px = Pixelization(nside=nside)
+
+    def compiled(T_alm, B_alm, spectra):
+        T_alm = np.asarray(T_alm, dtype=np.complex128)
+        B_alm = np.asarray(B_alm, dtype=np.complex128)
+        ell = np.arange(lmax + 1, dtype=float)
+        x = _eval_atom(X_resp, ell, spectra).real
+        y = _eval_atom(Y_resp, ell, spectra).real
+        L = _eval_atom(L_atom, ell, spectra).real
+        grad_L = np.sqrt(ell * (ell + 1))
+        L_res = np.where(grad_L > 0, L / grad_L, 0.0)
+        X_E = hp.almxfl(T_alm, x)
+        Y_B = hp.almxfl(B_alm, y)
+        zero = np.zeros_like(T_alm)
+        phi_curl = qe_pol_only(px, X_E, zero, zero, Y_B, lmax)
+        phi = phi_curl[0] if phi_curl.ndim == 2 else phi_curl
+        return pair_coeff * hp.almxfl(phi, L_res)
+
+    compiled.pair_coeff = pair_coeff
+    return compiled
+
+
+def compile_eb_native(terms, lmax, nside=2048):
+    """Native EB emitter. Mirrors estimator_backend.compile_eb."""
+    import healpy as hp
+    import math
+    from .estimator_backend import _extract_pol_response_from
+
+    xgrad = [t for t in terms if abs(t.spin_X) in (1, 3) and abs(t.spin_Y) == 2]
+    ref = next(t for t in xgrad if abs(t.spin_X) == 1)
+    X_resp = _extract_pol_response_from(ref, "X")
+    Y_resp = ref.Y_filter
+    L_atom = ref.L_factor
+    pair_coeff = complex(ref.coeff) * (-1) * 1 * math.sqrt(4*math.pi) * 2 * (-1j) * 2
+
+    px = Pixelization(nside=nside)
+
+    def compiled(E_alm, B_alm, spectra):
+        E_alm = np.asarray(E_alm, dtype=np.complex128)
+        B_alm = np.asarray(B_alm, dtype=np.complex128)
+        ell = np.arange(lmax + 1, dtype=float)
+        x = _eval_atom(X_resp, ell, spectra).real
+        y = _eval_atom(Y_resp, ell, spectra).real
+        L = _eval_atom(L_atom, ell, spectra).real
+        grad_L = np.sqrt(ell * (ell + 1))
+        L_res = np.where(grad_L > 0, L / grad_L, 0.0)
+        X_E = hp.almxfl(E_alm, x)
+        Y_B = hp.almxfl(B_alm, y)
+        zero = np.zeros_like(E_alm)
+        phi_curl = qe_pol_only(px, X_E, zero, zero, Y_B, lmax)
+        phi = phi_curl[0] if phi_curl.ndim == 2 else phi_curl
+        return pair_coeff * hp.almxfl(phi, L_res)
+
+    compiled.pair_coeff = pair_coeff
+    return compiled
+
+
+def compile_te_native(terms, lmax, nside=2048):
+    """Native TE emitter. Mirrors estimator_backend.compile_te (pol half
+    + temp half summed)."""
+    import healpy as hp
+    import math
+    from .estimator_backend import _extract_pol_response_from, _strip_sqrt_l_l_plus_1
+
+    pol_terms  = [t for t in terms if abs(t.spin_X) in (1, 3) and abs(t.spin_Y) == 2]
+    temp_terms = [t for t in terms if t.spin_X == 0 and abs(t.spin_Y) == 1]
+
+    pol_ref = next(t for t in pol_terms if abs(t.spin_X) == 1)
+    pol_X_resp = _extract_pol_response_from(pol_ref, "X")
+    pol_Y_resp = pol_ref.Y_filter
+    pol_L_atom = pol_ref.L_factor
+    pol_pair_coeff = complex(pol_ref.coeff) * (-1) * 1 * math.sqrt(4*math.pi) * 2 * 2
+
+    temp_ref = next(t for t in temp_terms if abs(t.spin_Y) == 1)
+    temp_Y_response = _strip_sqrt_l_l_plus_1(temp_ref.Y_filter, "l2")
+    temp_X_iv       = temp_ref.X_filter
+    temp_L_atom     = temp_ref.L_factor
+    temp_pair_coeff = complex(temp_ref.coeff) * (-1) * 1 * math.sqrt(4*math.pi) * 2
+
+    px = Pixelization(nside=nside)
+
+    def compiled(T_alm, E_alm, spectra):
+        T_alm = np.asarray(T_alm, dtype=np.complex128)
+        E_alm = np.asarray(E_alm, dtype=np.complex128)
+        ell = np.arange(lmax + 1, dtype=float)
+        grad_L = np.sqrt(ell * (ell + 1))
+
+        # pol half
+        p_x = _eval_atom(pol_X_resp, ell, spectra).real
+        p_y = _eval_atom(pol_Y_resp, ell, spectra).real
+        p_L = _eval_atom(pol_L_atom, ell, spectra).real
+        p_L_res = np.where(grad_L > 0, p_L / grad_L, 0.0)
+        X_E = hp.almxfl(T_alm, p_x)
+        Y_E = hp.almxfl(E_alm, p_y)
+        zero = np.zeros_like(T_alm)
+        pol_pc = qe_pol_only(px, X_E, zero, Y_E, zero, lmax)
+        pol_phi = (pol_pc[0] if pol_pc.ndim == 2 else pol_pc)
+        pol_phi = hp.almxfl(pol_phi, p_L_res) * pol_pair_coeff
+
+        # temp half
+        t_Y_resp = _eval_atom(temp_Y_response, ell, spectra).real
+        t_X_iv   = _eval_atom(temp_X_iv, ell, spectra).real
+        t_L      = _eval_atom(temp_L_atom, ell, spectra).real
+        t_L_res  = np.where(grad_L > 0, t_L / grad_L, 0.0)
+        E_as_X = hp.almxfl(E_alm, t_Y_resp)
+        T_as_Y = hp.almxfl(T_alm, t_X_iv)
+        temp_pc = qe_temperature_only(px, E_as_X, T_as_Y, lmax)
+        temp_phi = (temp_pc[0] if temp_pc.ndim == 2 else temp_pc)
+        temp_phi = hp.almxfl(temp_phi, t_L_res) * temp_pair_coeff
+
+        return pol_phi + temp_phi
+
+    compiled.pol_pair_coeff = pol_pair_coeff
+    compiled.temp_pair_coeff = temp_pair_coeff
+    return compiled

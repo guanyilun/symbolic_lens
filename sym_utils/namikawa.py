@@ -163,3 +163,24 @@ def f_rot_EE(px=-1):
 def f_rot_TB(px=-1):
     """Rotation TB estimator weight — uses W^{α,+} (symmetric with lensing's TB-via-W^−)."""
     return px * W_rot_p(l2, l, l1) * CTE(l1)
+
+
+# ======================================================================
+# Amplitude (source, patchy τ, point-source hardening) distortion weights.
+# Symlens.jl examples/tempura.jl reference:
+#   Wₑ⁰(ℓ₁,ℓ₂,ℓ₃,c) = γ·w3j(ℓ₁,ℓ₂,ℓ₃; 0, 0, 0)
+# Column-permuted to l-first form:
+#   w3j(l1, L, l2; 0,0,0) = P · w3j(L, l1, l2; 0,0,0)
+# Amplitude-type distortions are even parity (p_ε = +1).
+# ======================================================================
+
+def W_ampl_0(l1_, l_out, l2_, c=1):
+    """Amplitude / source / patchy-τ spin-0 weight.  No a-factors, no
+    (1+P)/2 factor — the w3j(j; 0, 0, 0) already enforces j1+j2+j3 even
+    automatically, making the parity structure trivial."""
+    return gamma_f(l1_, l_out, l2_) * P * wigner_3j(l_out, l1_, l2_, 0, 0, 0)
+
+
+def f_ampl_TT(px=+1):
+    """f^{ε,(TT)} = W_ε^0(l, L, l') · C_T(l')  +  p_ε · W_ε^0(l', L, l) · C_T(l)."""
+    return W_ampl_0(l1, l, l2) * CT(l2) + px * W_ampl_0(l2, l, l1) * CT(l1)

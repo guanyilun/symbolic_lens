@@ -350,6 +350,64 @@ def compile_eb_native(terms, lmax, *, nside=None, shape=None, wcs=None, px=None)
     return compiled
 
 
+def compile_source_tt_native(terms, lmax, *, nside=None, shape=None, wcs=None, px=None):
+    """Amplitude / source TT estimator (spin-0 output, no gradient filters).
+
+    Structurally simpler than lensing TT:
+      - spin-0 alm2map on both legs
+      - spin-0 map2alm_spin on the scalar output
+      - no sqrt(L(L+1)) post-multiplier
+
+    This is the Namikawa-style 'ε' estimator.  For a comparison against
+    ``falafel.qe.qe_source``, see test_source_vs_falafel.py — falafel's
+    default qe_source uses a different convention (no C_T response
+    weighting), so the two match only up to a trivial filter adjustment.
+    """
+    import healpy as hp
+    import math
+
+    px = _resolve_px(px, nside, shape, wcs)
+
+    # Source TT pair_coeff bookkeeping:
+    #   × coeff_ref   atomic coefficient = 1/(4√π)
+    #   × sqrt(4π)    γ residual
+    # NO extra X↔Y factor: spin-0 × spin-0 pixel multiplication is
+    #   commutative, so the two plans (X-response × Y-iv and its swap)
+    #   correspond to the SAME real-space product — falafel's qe_source
+    #   computes this product once.
+    # NO extra Δ factor: falafel's qe_source applies its own 0.5 at the
+    #   end (``salm = 0.5*res[0]``), which is exactly the 1/Δ scaling.
+    # Net:  coeff_ref · sqrt(4π)  =  (1/(4√π)) · 2√π  =  0.5.
+    ref = terms[0]
+    pair_coeff = complex(ref.coeff) * math.sqrt(4 * math.pi)
+
+    def compiled(T_alm, spectra):
+        T_alm = np.asarray(T_alm, dtype=np.complex128)
+        ell = np.arange(lmax + 1, dtype=float)
+        x_fl = _eval_atom(ref.X_filter, ell, spectra).real.astype(np.float64)
+        y_fl = _eval_atom(ref.Y_filter, ell, spectra).real.astype(np.float64)
+
+        X = hp.almxfl(T_alm, x_fl)      # response-weighted
+        Y = hp.almxfl(T_alm, y_fl)      # inverse-variance
+
+        Xmap = px.alm2map(X, spin=0, ncomp=1, mlmax=lmax)[0]
+        Ymap = px.alm2map(Y, spin=0, ncomp=1, mlmax=lmax)[0]
+
+        prod = Xmap * Ymap
+        if not px.hpix:
+            from pixell import enmap
+            prod = enmap.enmap(prod, px.wcs)
+
+        src_alm = px.map2alm_spin(prod, lmax, 0, 0)
+        # map2alm_spin with spin_alm=0, spin_transform=0 returns a
+        # pair (a+, a-).  For the scalar (spin-0) output we take res[0].
+        src_alm = src_alm[0] if src_alm.ndim == 2 else src_alm
+        return pair_coeff * src_alm
+
+    compiled.pair_coeff = pair_coeff
+    return compiled
+
+
 def compile_rot_eb_native(terms, lmax, nside=None, shape=None, wcs=None, px=None):
     """Native backend for the CMB rotation (α) EB estimator.
 

@@ -358,6 +358,25 @@ def compile_native(terms, lmax, *, px=None, nside=None, shape=None, wcs=None):
             y_fl = _eval_atom(plan.Y_filter, ell, spectra).real.astype(np.float64)
             L_fl = _eval_atom(plan.L_factor, ell, spectra).real.astype(np.float64)
 
+            # Falafel-compat mlmax truncation: falafel.qe.gradient_spin and
+            # deflection_map_to_phi_curl_alms build their internal filter via
+            # ``ells = np.arange(0, mlmax)`` which yields a length-mlmax array,
+            # silently zeroing the l=mlmax mode via cs.almxfl.  Also
+            # gradient_spin has ``fl[ells<2]=0``.  These only fire on the
+            # lensing pipeline (compile_{tt,ee,bb,tb,eb,te}_native) where the
+            # symbolic signature has abs_spin_L > 0.  For abs_spin_L == 0
+            # paths (rotation, source, patchy τ) the hand-coded emitters
+            # don't go through gradient_spin / deflection_to_phi_curl, so
+            # no truncation — leaving the generic path to use all modes.
+            if plan.abs_spin_L > 0:
+                if plan.abs_spin_X > 0:
+                    x_fl = x_fl.copy(); x_fl[lmax] = 0.0
+                    x_fl[0] = 0.0; x_fl[1] = 0.0
+                if plan.abs_spin_Y > 0:
+                    y_fl = y_fl.copy(); y_fl[lmax] = 0.0
+                    y_fl[0] = 0.0; y_fl[1] = 0.0
+                L_fl = L_fl.copy(); L_fl[lmax] = 0.0
+
             Xf = np.stack([hp.almxfl(X_pair[0], x_fl),
                            hp.almxfl(X_pair[1], x_fl)])
             Yf = np.stack([hp.almxfl(Y_pair[0], y_fl),
@@ -370,12 +389,27 @@ def compile_native(terms, lmax, *, px=None, nside=None, shape=None, wcs=None):
 
             # Per-term execution: each atomic term runs its own SHT pipeline
             # and the coefficient's sign signature selects the output channel.
-            # Sign convention: our symbolic sX is the 3j-argument-m value;
-            # the corresponding pick from the ±|s| pair is M_{sX} directly
-            # (sX ≥ 0 → first element M_+, sX < 0 → second element M_-).
+            #
+            # Sign convention: for |sL|=0 (scalar output), the Re(prod)
+            # extraction is invariant under sX → -sX flip (Re(z) = Re(conj(z)))
+            # so flip doesn't matter — the emitter bit-matches hand-coded on
+            # rotation and source.  For |sL|>0 (phi/curl lensing output) with
+            # spin_alm_leg = 0 (T), hand-coded's _gradient_spin picks the
+            # M_+|s_out| pair member, which corresponds to flip_X/flip_Y=True
+            # on that leg — verified bit-for-bit on TT.  For spin_alm_leg =±2
+            # (E/B), the pol-leg fusion is NOT bit-for-bit here; EE/BB/TB/EB/TE
+            # still differ at per-(L,m) level because the symbolic expansion
+            # produces separate plans for |sX|=1 and |sX|=3 (corresponding to
+            # hand-coded's g_m2 and g_p2 with different SHT spin_transforms),
+            # and their outputs don't simply fuse via per-plan sign flips.
+            # That remains the open subproblem — see memory.
+            flip_X = (plan.abs_spin_L > 0) and (X_spin_alm == 0) and (plan.abs_spin_X > 0)
+            flip_Y = (plan.abs_spin_L > 0) and (Y_spin_alm == 0) and (plan.abs_spin_Y > 0)
             for (sX, sY, sL), coeff in plan.coeffs.items():
-                Mx = X_maps[0] if sX >= 0 else X_maps[1]
-                My = Y_maps[0] if sY >= 0 else Y_maps[1]
+                sX_eff = -sX if flip_X else sX
+                sY_eff = -sY if flip_Y else sY
+                Mx = X_maps[0] if sX_eff >= 0 else X_maps[1]
+                My = Y_maps[0] if sY_eff >= 0 else Y_maps[1]
                 prod = complex(coeff) * Mx * My
 
                 if plan.abs_spin_L == 0:

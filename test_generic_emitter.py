@@ -95,6 +95,30 @@ def main():
     gen = compile_native(terms, LMAX, px=px)(pol_B_pair(B), pol_B_pair(B), spec)
     compare(ref, gen[+1], "BB (phi)")
 
+    # --- TB ---
+    g = f_TB(px=+1) / (hCT(l1) * hCB(l2))
+    terms = strip_gamma(compile_estimator(g))
+    spec = {"hCT": ocltt, "hCB": oclbb, "CTE": clte, "CT": cltt, "CB": clbb}
+    ref = compile_tb_native(terms, LMAX, px=px)(T, B, spec)
+    gen = compile_native(terms, LMAX, px=px)(scalar_pair(T), pol_B_pair(B), spec)
+    compare(ref, gen[+1], "TB (phi)")
+
+    # --- EB ---
+    g = f_EB(px=+1) / (hCE(l1) * hCB(l2))
+    terms = strip_gamma(compile_estimator(g))
+    spec = {"hCE": oclee, "hCB": oclbb, "CE": clee, "CB": clbb}
+    ref = compile_eb_native(terms, LMAX, px=px)(E, B, spec)
+    gen = compile_native(terms, LMAX, px=px)(pol_E_pair(E), pol_B_pair(B), spec)
+    compare(ref, gen[+1], "EB (phi)")
+
+    # --- TE ---
+    g = f_TE(px=+1) / (hCT(l1) * hCE(l2))
+    terms = strip_gamma(compile_estimator(g))
+    spec = {"hCT": ocltt, "hCE": oclee, "CTE": clte, "CT": cltt, "CE": clee}
+    ref = compile_te_native(terms, LMAX, px=px)(T, E, spec)
+    gen = compile_native(terms, LMAX, px=px)(scalar_pair(T), pol_E_pair(E), spec)
+    compare(ref, gen[+1], "TE (phi)")
+
     # --- Rotation EB ---
     g = f_rot_EB(px=-1) / (hCE(l1) * hCB(l2))
     terms = strip_gamma(compile_estimator(g))

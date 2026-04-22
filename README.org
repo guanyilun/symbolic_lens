@@ -793,15 +793,24 @@ this exactly for regression fidelity; a one-line upstream fix
 on both backends simultaneously.
 
 *What milestone 3 unlocks.*  The native backend accepts arbitrary
-=EstimatorTerm= lists — not only the lensing templates for which
-falafel has hand-coded primitives.  The same compilation path
-(=compile_estimator → strip_gamma → compile_*_native=) applies to
-estimators for CMB rotation, patchy τ, point sources, or any new
-weight function =W= a user writes symbolically.  The falafel-delegating
-backend A stays as a regression oracle for the 6 lensing QEs.
+=EstimatorTerm= lists — not only the lensing templates.  The same
+compilation path (=compile_estimator → strip_gamma → compile_*_native=)
+applies to estimators for CMB rotation (anisotropic birefringence, α),
+patchy τ, point sources, or any new weight function =W= a user writes
+symbolically.
 
-TE/TB/EB haven't been wired into the native backend yet but are
-mechanical extensions of the existing EE/BB pattern.
+*Full 6-estimator parity (TT/EE/BB/TB/EB/TE)* — all match backend A
+bit-for-bit at ~10⁻¹⁷ machine precision; see
+=test_estimator_native_vs_backendA.py=.
+
+*Demo: new physics beyond lensing.*  =demo_rotation_estimator.py= builds
+the rotation EB estimator's weight function symbolically
+(=W^{α,+}= from =namikawa.py=, analogous to Symlens.jl's =Wₐ⁺=) and
+compiles it.  The resulting SHT recipe is structurally different from
+the lensing EB case — output spin is =0= (not =1=) and there is no
+=sqrt(L(L+1))= post-multiplier, because rotation is a spin-0
+distortion rather than a lensing gradient.  The engine derives this
+automatically from the symbolic =W=.
 
 ** Pattern-based rewrite rules (Rule / Prewalk / Postwalk)
 

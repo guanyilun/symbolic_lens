@@ -116,3 +116,50 @@ def f_EB(px=+1):
 
 def f_BB(px=+1):
     return W_lens_p(l1, l, l2) * CB(l2) + px * W_lens_p(l2, l, l1) * CB(l1)
+
+
+# ======================================================================
+# CMB rotation (anisotropic birefringence, α) distortion weights.
+# Symlens.jl examples/tempura.jl reference:
+#   Wₐ⁺(ℓ₁,ℓ₂,ℓ₃,c) = 2·i·ζ⁺·q⁻(c)·γ·w3j(ℓ₁,ℓ₂,ℓ₃; 2, 0, -2)
+#   Wₐ⁻(ℓ₁,ℓ₂,ℓ₃,c) = 2·i·ζ⁻·q⁺(c)·γ·w3j(ℓ₁,ℓ₂,ℓ₃; 2, 0, -2)
+# Rotation is an odd-parity distortion (p_α = −1).  The 2·i prefactor is
+# preserved symbolically; the native backend will carry the i through the
+# coefficient and the rot2d/irot2d pair will resolve it in the E/B split.
+#
+# 3j column-permutation identity for canonical l-first ordering:
+#   w3j(l1, L, l2; 2, 0, -2) = P · w3j(L, l1, l2; 0, 2, -2)
+# ======================================================================
+
+def W_rot_p(l1_, l_out, l2_, c=1):
+    """Namikawa Eq. (rotation) — W^{α,+} (even-parity polarization mixing)."""
+    return 2 * I * ZETA_PLUS * q_minus(c) * gamma_f(l1_, l_out, l2_) * \
+           P * wigner_3j(l_out, l1_, l2_, 0, 2, -2)
+
+
+def W_rot_m(l1_, l_out, l2_, c=1):
+    """Namikawa Eq. (rotation) — W^{α,-} (odd-parity polarization mixing)."""
+    return 2 * I * ZETA_MINUS * q_plus(c) * gamma_f(l1_, l_out, l2_) * \
+           P * wigner_3j(l_out, l1_, l2_, 0, 2, -2)
+
+
+# ------------------- rotation f-weights ---------------------------
+# Estimator parity for rotation is p_α = −1 (odd).  The pol-mixing
+# structure flips relative to lensing: rotation EB uses W^+, not W^-.
+
+def f_rot_EB(px=-1):
+    """Rotation EB estimator weight (Namikawa-style).
+
+    Mirrors Namikawa's lensing-EB template with the even/odd roles
+    appropriate to rotation (W^{α,+} instead of W^{x,-})."""
+    return W_rot_p(l1, l, l2) * CB(l2) + px * W_rot_p(l2, l, l1) * CE(l1)
+
+
+def f_rot_EE(px=-1):
+    """Rotation EE estimator weight — uses W^{α,-}."""
+    return W_rot_m(l1, l, l2) * CE(l2) + px * W_rot_m(l2, l, l1) * CE(l1)
+
+
+def f_rot_TB(px=-1):
+    """Rotation TB estimator weight — uses W^{α,+} (symmetric with lensing's TB-via-W^−)."""
+    return px * W_rot_p(l2, l, l1) * CTE(l1)

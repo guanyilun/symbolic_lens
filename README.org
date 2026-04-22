@@ -565,69 +565,66 @@ Falafel returns *unnormalized* estimates; normalization must be applied separate
 
 * Validation
 
-Two complementary checks confirm the symbolic engine is correct:
+Two complementary checks confirm the symbolic engine is correct.
 
-** Per-kernel: symbolic vs brute-force 3j summation
+** Per-triangle sanity: symbolic vs brute-force 3j summation
 
 =comp_sym_vs_hand.py= computes each of the 8 basis kernels
 $\Sigma^0, \Sigma^\pm, \Sigma^\times, \Gamma^0, \Gamma^\pm, \Gamma^\times$
 by two independent routes:
 
-1. The symbolic compiler pipeline (=sym_utils/l12_sum.py=) at
-   ~lmax=10, rlmin=1, rlmax=8~.
-2. A direct double-sum $\sum_{\ell_1, \ell_2}$ using =sympy.physics.wigner.wigner_3j=
-   (exact rational 3j symbols).
+1. The symbolic compiler pipeline (=sym_utils/l12_sum.py=).
+2. A direct double-sum $\sum_{\ell_1, \ell_2}$ using
+   =sympy.physics.wigner.wigner_3j= — exact rational 3j arithmetic.
 
-Both paths produce the same values to ~$10^{-10}$ relative difference
-across every $L$. The ratio plot =comp_sym_vs_brute_ratio.png= is
-visually indistinguishable from unity for all 8 kernels:
+This runs at small $\ell_{\max} = 10$ because the exact sympy 3j evaluator
+is slow (scales like $\ell_{\max}^3$). It's a text-only pass/fail check:
+every kernel must match to $\lesssim 10^{-9}$ relative. This pins down the
+compiler at the atomic level before any recipe composition.
 
-#+begin_center
-[[file:comp_sym_vs_brute_ratio.png]]
-#+end_center
+** End-to-end: reconstruction noise vs pytempura-validated reference
 
-This is the strongest possible per-kernel test — brute-force enumeration
-with exact 3j arithmetic has no free parameters or approximations.
+=check_full_norm.py= is the substantive check. It runs at realistic
+$\ell_{\max} = 3000, \mathrm{rlmax} = 3000$ on the CMB lensed spectrum from
+=cosmo2017_10K_acc3_lensedCls.dat= (the same file used by the Symlens.jl
+=demo3_tempura.ipynb= comparison), with a dummy noise model
+$N_\ell^{TT} = 10 (1 + \ell/1000)^3\,\mu\mathrm{K}^2$ and
+$N_\ell^{\rm pol} = \sqrt{2}\, N_\ell^{TT}$.
 
-** End-to-end: symbolic vs hand-coded (pytempura-validated) estimators
+The 8 symbolic kernels are combined via the Namikawa recipe into the six
+quadratic-estimator normalizations and compared against the hand-coded
+=norm_lens.py= (which itself has been validated against =pytempura= at
+$\text{rtol} \sim 10^{-9}$ — see =comp_tempura.py=).
 
-=check_full_norm.py= combines the 8 symbolic kernels via the
-Toshiya-Namikawa recipe (see =tempura.jl=) to form the quadratic-estimator
-normalizations ~qtt, qte, qtb, qee, qbb, qeb~, and compares against the
-hand-coded implementations in =norm_lens.py= (which has been validated
-against =pytempura= at $\text{rtol} = 10^{-9}$ — see =comp_tempura.py=).
-
-At ~lmax=60, rlmin=2, rlmax=50~ with representative CMB-like spectra,
-all 6 estimators agree with the hand-coded reference to roughly
-machine precision ($\sim 10^{-14}$):
-
-| Estimator | Max $|\text{hand} - \text{sym}| / |\text{sym}|$ over $L \in [10, 60]$ |
-|-----------+---------------------------------------------------------------------|
-| qtt       | ~9 × 10^{-15}~                                                      |
-| qte       | ~1.3 × 10^{-14}~                                                    |
-| qtb       | ~2.1 × 10^{-15}~                                                    |
-| qee       | ~1.3 × 10^{-14}~                                                    |
-| qbb       | ~2.4 × 10^{-14}~                                                    |
-| qeb       | ~1.3 × 10^{-15}~                                                    |
-
-The relative-difference plot =comp_full_norm_reldiff.png= shows the
-agreement is flat across $L$:
+Reconstruction-noise curves $L^4 N_L^{\phi}$ for each estimator (hand-coded
+solid, symbolic-compiled dashed — they overplot indistinguishably):
 
 #+begin_center
-[[file:comp_full_norm_reldiff.png]]
+[[file:figures/nlphi_hand_vs_sym.png]]
 #+end_center
 
-And the absolute curves =comp_full_norm.png= overplot indistinguishably:
+Relative difference between the two implementations across $L \in [2, 3000]$:
 
 #+begin_center
-[[file:comp_full_norm.png]]
+[[file:figures/nlphi_reldiff.png]]
 #+end_center
 
-Taken together: the symbolic compiler reproduces the per-triangle Wigner
-3j summation (brute-force ground truth) and, when composed into full
-estimator normalizations, matches the pytempura-validated hand-coded
-implementation at floating-point precision. Any future physics extension
-that goes through the same compiler inherits this level of trust.
+Max $|N_L^{\text{hand}} - N_L^{\text{sym}}| / |N_L^{\text{sym}}|$ over
+$L \in [10, 3000]$:
+
+| Estimator | Max relative difference |
+|-----------+--------------------------|
+| qtt       | $3.6 \times 10^{-12}$    |
+| qte       | $4.6 \times 10^{-13}$    |
+| qtb       | $7.4 \times 10^{-12}$    |
+| qee       | $1.5 \times 10^{-12}$    |
+| qbb       | $1.2 \times 10^{-11}$    |
+| qeb       | $2.2 \times 10^{-12}$    |
+
+Agreement is at the floating-point accumulation limit of the GL quadrature
+(~$10^{-12}$ over 3000 $L$-modes). The per-triangle check plus the
+end-to-end agreement at realistic scales together demonstrate the symbolic
+compiler is correct at both the component and composite level.
 
 * Future Work
 

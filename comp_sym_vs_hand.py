@@ -1,19 +1,19 @@
 #%%
 """
-Verify symbolically compiled kernels against brute-force 3j summation.
+Per-triangle sanity test: each of the 8 basis kernels (S0/Sp/Sm/Sx/G0/Gp/Gm/Gx)
+computed by the symbolic compiler must equal the direct double-sum over
+(l1, l2) using exact sympy.physics.wigner 3j symbols.
 
-The hand-coded kernels in norm_lens.py use a different mathematical
-formulation (Namikawa spin-weighted SHT decomposition) and are not
-directly comparable to the symbolic compiler output. Both give the
-same final normalization but differ at the individual kernel level.
+This is a cheap but exhaustive ground-truth check: it pins down the
+symbolic compiler at the atomic level before any estimator-recipe
+composition. Limited to small lmax because sympy's exact 3j evaluator
+is slow (the end-to-end check in check_full_norm.py runs at lmax=3000
+against pytempura-validated hand-coded kernels).
 """
 from sympy import Function, sqrt, pi, I
 from sympy.physics.wigner import wigner_3j as w3j_exact
 from sym_utils.l12_sum import L12SumCompiler, wigner_3j, l, l1, l2, P
 import numpy as np
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
 
 # ---- Build symbolic kernels ----
 A_sym, B_sym = Function("A"), Function("B")
@@ -192,51 +192,7 @@ for name in kernel_names:
 
 print()
 if all_pass:
-    print("ALL KERNELS PASS - symbolic compiler is correct!")
+    print("ALL KERNELS PASS - symbolic compiler matches brute-force 3j.")
 else:
     print("SOME KERNELS FAILED - check symbolic compiler.")
-
-# ---- Plot ----
-fig, axes = plt.subplots(4, 2, figsize=(14, 16))
-fig.suptitle("Symbolic vs Brute-force Kernel Comparison", fontsize=14)
-
-for idx, name in enumerate(kernel_names):
-    ax = axes[idx // 2, idx % 2]
-    s = sym_results[name]
-    b = brute_results[name]
-
-    ax.plot(ell[2:], np.abs(s[2:]), label="Symbolic", ls='-', alpha=0.8)
-    ax.plot(ell[2:], np.abs(b[2:]), label="Brute-force", ls='--', alpha=0.8)
-    ax.set_yscale('log')
-    ax.set_xlabel(r'$\ell$')
-    ax.set_title(name)
-    ax.legend(fontsize=8)
-
-plt.tight_layout()
-plt.savefig("comp_sym_vs_brute.png", dpi=150)
-print("\nSaved: comp_sym_vs_brute.png")
-
-# ---- Ratio plot ----
-fig2, axes2 = plt.subplots(4, 2, figsize=(14, 16))
-fig2.suptitle("Ratio: Symbolic / Brute-force", fontsize=14)
-
-for idx, name in enumerate(kernel_names):
-    ax = axes2[idx // 2, idx % 2]
-    s = sym_results[name]
-    b = brute_results[name]
-
-    mask = (np.abs(b) > 1e-20) & (ell > 1)
-    if mask.sum() > 0:
-        ratio = s[mask] / b[mask]
-        ax.plot(ell[mask], ratio, 'k.', markersize=4)
-        ax.axhline(y=1.0, color='r', ls='--', label='ideal=1.0')
-        ax.set_ylim(0.5, 1.5)
-
-    ax.set_xlabel(r'$\ell$')
-    ax.set_ylabel('sym / brute')
-    ax.set_title(name)
-    ax.legend(fontsize=8)
-
-plt.tight_layout()
-plt.savefig("comp_sym_vs_brute_ratio.png", dpi=150)
-print("Saved: comp_sym_vs_brute_ratio.png")
+    raise SystemExit(1)

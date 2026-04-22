@@ -45,39 +45,76 @@ def _irot2d(fmap, spin):
 
 
 class Pixelization:
-    """Minimal inlined equivalent of ``falafel.qe.pixelization``.
+    """Inlined equivalent of ``falafel.qe.pixelization`` supporting BOTH
+    HEALPix and CAR (pixell) geometries.
 
-    HEALPix only for now; CAR support is straightforward but not wired.
+    CAR is the canonical pixelization for SO / ACT pipelines; use it by
+    passing ``shape`` and ``wcs`` (both obtained from
+    ``pixell.enmap.fullsky_geometry`` or similar).  HEALPix is kept for
+    back-compat by passing ``nside`` instead.
+
+    Conventions match falafel.qe.pixelization exactly so the native
+    backend is bit-compatible with falafel on both geometries.
     """
-    def __init__(self, nside, dtype=np.float32, iter=0):
-        import healpy as hp
-        self.nside = nside
+    def __init__(self, shape=None, wcs=None, nside=None,
+                 dtype=np.float32, iter=0):
+        if shape is not None:
+            assert wcs is not None, "CAR pixelization needs both shape and wcs"
+            assert nside is None,    "pass either shape+wcs or nside, not both"
+            self.hpix = False
+            self.shape = shape[-2:]
+            self.wcs = wcs
+        else:
+            assert wcs is None
+            assert nside is not None
+            self.hpix = True
+            self.nside = nside
         self.dtype = dtype
         self.iter = iter
-        self.hpix = True
+
+    # ---- alm → map ----
 
     def alm2map(self, alm, spin, ncomp, mlmax):
-        import healpy as hp
-        if spin != 0:
-            return hp.alm2map_spin(alm, nside=self.nside, spin=spin, lmax=mlmax)
-        return hp.alm2map(alm.astype(np.complex128), nside=self.nside, pol=False)[None]
+        if self.hpix:
+            import healpy as hp
+            if spin != 0:
+                return hp.alm2map_spin(alm, nside=self.nside, spin=spin, lmax=mlmax)
+            return hp.alm2map(alm.astype(np.complex128), nside=self.nside,
+                              pol=False)[None]
+        from pixell import curvedsky as cs, enmap
+        omap = enmap.empty((ncomp,) + self.shape, self.wcs, dtype=self.dtype)
+        return cs.alm2map(alm, omap, spin=spin)
 
     def alm2map_spin(self, alm, spin_alm, spin_transform, ncomp, mlmax):
-        import healpy as hp
         ap_am = _irot2d(alm, spin=spin_alm)
-        res = hp.alm2map_spin(ap_am.astype(np.complex128), nside=self.nside,
-                              spin=abs(spin_transform), lmax=mlmax)
+        if self.hpix:
+            import healpy as hp
+            res = hp.alm2map_spin(ap_am.astype(np.complex128), nside=self.nside,
+                                  spin=abs(spin_transform), lmax=mlmax)
+        else:
+            from pixell import curvedsky as cs, enmap
+            omap = enmap.empty((ncomp,) + self.shape, self.wcs, dtype=self.dtype)
+            res = cs.alm2map(ap_am, omap, spin=abs(spin_transform))
         return _rot2d(res)
 
+    # ---- map → alm ----
+
     def map2alm(self, imap, lmax):
-        import healpy as hp
-        return hp.map2alm(imap.astype(np.float64), lmax=lmax, iter=self.iter)
+        if self.hpix:
+            import healpy as hp
+            return hp.map2alm(np.asarray(imap, dtype=np.float64), lmax=lmax, iter=self.iter)
+        from pixell import curvedsky as cs
+        return cs.map2alm(imap, lmax=lmax)
 
     def map2alm_spin(self, imap, lmax, spin_alm, spin_transform):
-        import healpy as hp
         dmap = -_irot2d(np.stack((imap, imap.conj())), spin=spin_alm).real
-        return hp.map2alm_spin(dmap.astype(np.float64), lmax=lmax,
-                               spin=spin_transform)
+        if self.hpix:
+            import healpy as hp
+            return hp.map2alm_spin(np.asarray(dmap, dtype=np.float64),
+                                   lmax=lmax, spin=spin_transform)
+        from pixell import curvedsky as cs, enmap
+        return cs.map2alm(enmap.enmap(dmap, self.wcs),
+                          spin=spin_transform, lmax=lmax)
 
 
 # =================================================================
@@ -296,21 +333,30 @@ def compile_eb_native(terms, lmax, nside=2048):
     return compiled
 
 
-def compile_rot_eb_native(terms, lmax, nside=2048):
+def compile_rot_eb_native(terms, lmax, nside=None, shape=None, wcs=None, px=None):
     """Native backend for the CMB rotation (α) EB estimator.
+
+    Pass either ``nside`` (HEALPix) or ``shape`` + ``wcs`` (CAR), or a
+    pre-built ``px`` object.  CAR is the canonical SO/ACT pipeline
+    geometry and is recommended for production.
 
     Structurally different from lensing EB:
       - spin-2 SHT on both E and B legs (no gradient/sqrt filters)
       - scalar (spin-0) map2alm for the output α_LM
       - no sqrt(L(L+1)) post-multiplier (L_factor = 1 in the recipe)
 
-    This primitive is NOT present in falafel.qe; it is assembled from
-    scratch from the inlined ``Pixelization`` primitives.  The symbolic
-    recipe (spin tuples, filters, coefficients) comes directly from the
-    rotation weight function ``W_rot_±`` defined in namikawa.py.
+    This primitive is NOT present in falafel.qe as a single function,
+    though falafel.qe.qe_rot provides an equivalent CAR-only implementation
+    we validate against.  The emitter assembles the primitive from the
+    symbolic recipe (spin tuples, filters, coefficients); the underlying
+    W^{α,+} weight is defined in namikawa.py.
     """
     import healpy as hp
-    px = Pixelization(nside=nside)
+    if px is None:
+        if nside is not None:
+            px = Pixelization(nside=nside)
+        else:
+            px = Pixelization(shape=shape, wcs=wcs)
 
     def compiled(E_alm, B_alm, spectra):
         E_alm = np.asarray(E_alm, dtype=np.complex128)
@@ -347,8 +393,16 @@ def compile_rot_eb_native(terms, lmax, nside=2048):
         # and apply the (constant) L_factor once.
         L_fl = _eval_atom(terms[0].L_factor, ell, spectra).real.astype(np.float64)
         alpha_map = total_map.real
-        alpha_alm = px.map2alm(np.asarray(alpha_map, dtype=np.float64), lmax=lmax)
-        return hp.almxfl(alpha_alm, L_fl)
+        if px.hpix:
+            alpha_alm = px.map2alm(np.asarray(alpha_map, dtype=np.float64), lmax=lmax)
+        else:
+            from pixell import enmap
+            alpha_alm = px.map2alm(enmap.enmap(alpha_map, px.wcs), lmax=lmax)
+        alpha_alm = hp.almxfl(alpha_alm, L_fl)
+        # Undo the γ residual 1/sqrt(4π) that our symbolic f/g carries
+        # explicitly; falafel.qe.qe_rot does not include this factor.
+        import math
+        return alpha_alm * math.sqrt(4 * math.pi)
 
     compiled.n_terms = len(terms)
     return compiled

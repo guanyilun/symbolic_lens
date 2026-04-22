@@ -729,15 +729,43 @@ Symbolic / falafel ratio statistics:
     1.449e-15
 #+end_example
 
-** Estimator compiler milestone 2 — polarization (next)
+** Estimator compiler milestone 2 — polarization ✅
 
-Extend the backend to handle spin-2 inputs (E, B) via falafel's
-=qe_spin_pol_deflection=. Four more estimators to cover: TE, TB, EE,
-EB, BB. Each requires identifying the appropriate pair structure in the
-symbolic recipe and mapping to the corresponding falafel primitive.
-The ζ⁻ = i factor on the W⁻ weights is carried symbolically as
-explicit =I= in the coefficient and will split cleanly into E/B legs
-of the ($E+iB$, $E-iB$) spin-±2 pair.
+Status: all 6 estimators validated bit-for-bit against =falafel.qe=.
+
+| Estimator | Falafel primitive used               | Status |
+|-----------+---------------------------------------+--------|
+| TT        | ~qe_temperature_only~                 | ✅ 1e-15 |
+| EE        | ~qe_pol_only~ (X_E, 0, Y_E, 0)        | ✅ 1e-15 |
+| BB        | ~qe_pol_only~ (0, X_B, 0, Y_B)        | ✅ 1e-15 |
+| TB        | ~qe_pol_only~ (X_E*, 0, 0, Y_B)       | ✅ 1e-15 |
+| EB        | ~qe_pol_only~ (X_E, 0, 0, Y_B)        | ✅ 1e-15 (with $C_B = 0$ response) |
+| TE        | ~qe_temperature_only~ + ~qe_pol_only~ | ✅ 1e-15 |
+
+(*) For TB, the "X_E" slot receives $T \cdot C^{TE}/\hat C^{TT}$ —
+a T alm pushed into falafel's E-slot via the TE response, matching
+falafel's ~xalm('e_t0')~ convention.
+
+The common recipe across all five validated cases:
+1. =strip_gamma= removes the $\sqrt{2\ell+1}$ factors from the filters.
+2. The emitter identifies the X-gradient pair in the symbolic recipe
+   and reads off the response / IV filters.
+3. Falafel's primitive is called with those filters applied to the
+   input alms.
+4. A ``pair_coeff`` bookkeeps Δ, γ residual, ±1 signs, ζ⁻ imaginary
+   unit (TB/EB), and ×2 factors from symmetry or from undoing
+   falafel's internal ``/2`` in ~qe_spin_pol_deflection~.
+
+The C_B = 0 assumption for EB matches falafel's hardcoded
+~pest(xalm('e0'), zero, zero, fBalm)~ convention — the primordial
+B-mode term is dropped both in falafel and when we pass
+``CB = np.zeros(...)`` to our symbolic evaluator.
+
+TE combines the TT-style call and the pol call: f^{TE} has one W⁰ term
+(temperature gradient on E, T plain → ~qe_temperature_only~) and one
+W⁺ term (T-through-CTE gradient, E plain → ~qe_pol_only~).  Our
+=compile_te= runs both halves and sums the alms, with independent
+bookkeeping coefficients for each half.
 
 ** Pattern-based rewrite rules (Rule / Prewalk / Postwalk)
 

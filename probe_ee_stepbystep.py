@@ -32,12 +32,17 @@ plan1 = plans[1]
 # === Generic: build Plan 0 + Plan 1 prods (contributing to phi, sL=+1) ===
 grad_l = np.sqrt(ell * (ell + 1))
 
-def plan_prod(plan, spectra):
+def plan_prod(plan, spectra, X_spin_alm=2, Y_spin_alm=2):
     x_fl = _eval_atom(plan.X_filter, ell, spectra).real.astype(np.float64)
     y_fl = _eval_atom(plan.Y_filter, ell, spectra).real.astype(np.float64)
     # apply mlmax truncation to match hand-coded's gradient_spin
-    x_fl = x_fl.copy(); x_fl[LMAX] = 0; x_fl[0] = 0; x_fl[1] = 0
-    y_fl = y_fl.copy(); y_fl[LMAX] = 0; y_fl[0] = 0; y_fl[1] = 0
+    # ONLY on ladder legs (where abs_spin_out != spin_alm)
+    ladder_X = (plan.abs_spin_X != X_spin_alm)
+    ladder_Y = (plan.abs_spin_Y != Y_spin_alm)
+    if ladder_X:
+        x_fl = x_fl.copy(); x_fl[LMAX] = 0; x_fl[0] = 0; x_fl[1] = 0
+    if ladder_Y:
+        y_fl = y_fl.copy(); y_fl[LMAX] = 0; y_fl[0] = 0; y_fl[1] = 0
 
     Xf = np.stack([hp.almxfl(E, x_fl), hp.almxfl(E, x_fl)])
     Yf = np.stack([hp.almxfl(E, y_fl), hp.almxfl(E, y_fl)])
@@ -46,15 +51,21 @@ def plan_prod(plan, spectra):
     Y_maps = _alm_to_signed_pair(px, Yf, spin_alm_in=2,
                                  abs_spin_out=plan.abs_spin_Y, lmax=LMAX)
 
-    # Sum prod over the phi-contributing sig only (sL=+1)
+    # Apply flip + NP sign (same rule as compile_native)
+    flip = True
+    np_sign = 1
+    if plan.abs_spin_X == 3: np_sign = -np_sign
+    if plan.abs_spin_Y == 3: np_sign = -np_sign
+
     total = None
     for (sX, sY, sL), c in plan.coeffs.items():
         if sL != +1:
             continue
-        # No flip on pol legs under leg-dependent convention
-        Mx = X_maps[0] if sX >= 0 else X_maps[1]
-        My = Y_maps[0] if sY >= 0 else Y_maps[1]
-        contrib = complex(c) * Mx * My
+        sX_eff = -sX if flip else sX
+        sY_eff = -sY if flip else sY
+        Mx = X_maps[0] if sX_eff >= 0 else X_maps[1]
+        My = Y_maps[0] if sY_eff >= 0 else Y_maps[1]
+        contrib = np_sign * complex(c) * Mx * My
         total = contrib if total is None else total + contrib
     return total
 

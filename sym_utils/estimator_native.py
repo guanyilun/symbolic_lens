@@ -363,16 +363,19 @@ def compile_native(terms, lmax, *, px=None, nside=None, shape=None, wcs=None):
             # ``ells = np.arange(0, mlmax)`` which yields a length-mlmax array,
             # silently zeroing the l=mlmax mode via cs.almxfl.  Also
             # gradient_spin has ``fl[ells<2]=0``.  These only fire on the
-            # lensing pipeline (compile_{tt,ee,bb,tb,eb,te}_native) where the
-            # symbolic signature has abs_spin_L > 0.  For abs_spin_L == 0
-            # paths (rotation, source, patchy τ) the hand-coded emitters
-            # don't go through gradient_spin / deflection_to_phi_curl, so
-            # no truncation — leaving the generic path to use all modes.
+            # LADDER-APPLIED leg (the one where abs_spin_out differs from
+            # the field's spin_alm — i.e., the one that goes through
+            # _gradient_spin).  The non-ladder leg (abs_spin_out == spin_alm)
+            # goes through direct alm2map and has no such truncation.
+            # For abs_spin_L == 0 paths (rotation, source, τ) there's no
+            # gradient_spin/deflection path at all, so nothing to truncate.
+            ladder_X = (plan.abs_spin_X != X_spin_alm)
+            ladder_Y = (plan.abs_spin_Y != Y_spin_alm)
             if plan.abs_spin_L > 0:
-                if plan.abs_spin_X > 0:
+                if ladder_X and plan.abs_spin_X > 0:
                     x_fl = x_fl.copy(); x_fl[lmax] = 0.0
                     x_fl[0] = 0.0; x_fl[1] = 0.0
-                if plan.abs_spin_Y > 0:
+                if ladder_Y and plan.abs_spin_Y > 0:
                     y_fl = y_fl.copy(); y_fl[lmax] = 0.0
                     y_fl[0] = 0.0; y_fl[1] = 0.0
                 L_fl = L_fl.copy(); L_fl[lmax] = 0.0
@@ -387,30 +390,58 @@ def compile_native(terms, lmax, *, px=None, nside=None, shape=None, wcs=None):
             Y_maps = _alm_to_signed_pair(px, Yf, Y_spin_alm,
                                           plan.abs_spin_Y, lmax)
 
-            # Per-term execution: each atomic term runs its own SHT pipeline
-            # and the coefficient's sign signature selects the output channel.
+            # Three convention rules applied on top of the symbolic coeff:
             #
-            # Sign convention: for |sL|=0 (scalar output), the Re(prod)
-            # extraction is invariant under sX → -sX flip (Re(z) = Re(conj(z)))
-            # so flip doesn't matter — the emitter bit-matches hand-coded on
-            # rotation and source.  For |sL|>0 (phi/curl lensing output) with
-            # spin_alm_leg = 0 (T), hand-coded's _gradient_spin picks the
-            # M_+|s_out| pair member, which corresponds to flip_X/flip_Y=True
-            # on that leg — verified bit-for-bit on TT.  For spin_alm_leg =±2
-            # (E/B), the pol-leg fusion is NOT bit-for-bit here; EE/BB/TB/EB/TE
-            # still differ at per-(L,m) level because the symbolic expansion
-            # produces separate plans for |sX|=1 and |sX|=3 (corresponding to
-            # hand-coded's g_m2 and g_p2 with different SHT spin_transforms),
-            # and their outputs don't simply fuse via per-plan sign flips.
-            # That remains the open subproblem — see memory.
-            flip_X = (plan.abs_spin_L > 0) and (X_spin_alm == 0) and (plan.abs_spin_X > 0)
-            flip_Y = (plan.abs_spin_L > 0) and (Y_spin_alm == 0) and (plan.abs_spin_Y > 0)
+            # 1. ``flip_*`` (pair-member selection): for lensing plans
+            #    (abs_spin_L>0), hand-coded's _gradient_spin picks
+            #    M_+|s_out| (comp=0) for T-leg spin=0 inputs, and picks
+            #    specific ±|s_out| members on pol legs via its comp/sign
+            #    convention.  Symbolically, sig sX=-1 naively picks M_-|s|;
+            #    flipping makes it pick M_+|s|.  Verified bit-for-bit on TT.
+            #
+            # 2. ``plan_factor`` NP-ladder sign (W^+ plans only): the
+            #    symbolic Namikawa a(l, s) = -sqrt((l-s)(l+s+1)/2) carries
+            #    a uniform minus sign.  But Newman-Penrose ladder operators
+            #    have OPPOSITE signs:
+            #        ð (raising):  -sqrt((l-s)(l+s+1))
+            #        ð̄ (lowering): +sqrt((l+s)(l-s+1))
+            #    Hand-coded falafel's _gradient_spin encodes this via
+            #    sign=-1 on spin=+2 (→ |s_out|=3) branch.  The symbolic
+            #    emitter restores the relative sign on any W^+ plan with
+            #    |s|=3 on a ladder leg.
+            #
+            # 3. ``plan_factor`` (-1j) rotation (W^- plans only): W^-
+            #    coefficients carry a ζ_-=i factor.  The pixel product
+            #    then has an imaginary prefactor; map2alm_spin(j·prod)
+            #    evaluates to the CURL mode, not the grad mode — a 90°
+            #    rotation in (grad, curl) space.  Hand-coded's pair_coeff
+            #    for TB/EB includes a (-1j) factor; the symbolic emitter
+            #    applies the same to each W^- plan's prod.  Also, the
+            #    (1-P)/2 parity of W^- already supplies the relative sign
+            #    between |sX|=1 and |sX|=3 branches, so NP flip is NOT
+            #    applied on W^- plans.
+            #
+            # Detection: W^+ plans have REAL coefficients (ζ_+=1);
+            # W^- plans have IMAGINARY coefficients (ζ_-=i).
+            flip_X = (plan.abs_spin_L > 0) and (plan.abs_spin_X > 0)
+            flip_Y = (plan.abs_spin_L > 0) and (plan.abs_spin_Y > 0)
+            is_W_plus = all(abs(complex(c).imag) < 1e-12 * (abs(complex(c).real) + 1e-30)
+                            for c in plan.coeffs.values())
+            plan_factor = 1 + 0j
+            if plan.abs_spin_L > 0:
+                if is_W_plus:
+                    if plan.abs_spin_X == 3:
+                        plan_factor = -plan_factor
+                    if plan.abs_spin_Y == 3:
+                        plan_factor = -plan_factor
+                else:
+                    plan_factor = -1j * plan_factor
             for (sX, sY, sL), coeff in plan.coeffs.items():
                 sX_eff = -sX if flip_X else sX
                 sY_eff = -sY if flip_Y else sY
                 Mx = X_maps[0] if sX_eff >= 0 else X_maps[1]
                 My = Y_maps[0] if sY_eff >= 0 else Y_maps[1]
-                prod = complex(coeff) * Mx * My
+                prod = plan_factor * complex(coeff) * Mx * My
 
                 if plan.abs_spin_L == 0:
                     m = prod.real

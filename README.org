@@ -58,6 +58,7 @@ symbolic_lens/
 │   ├── estimator.py        # Layer 5b: estimator compiler (single W → SHT recipe)
 │   ├── estimator_backend.py # Falafel-delegating emitter (backend A)
 │   ├── estimator_native.py # Native SHT emitter + generic compile_native
+│   ├── compile_qe.py       # Unified compile: estimator + A_L + N_L^phi
 │   └── namikawa.py         # Shared W^{x,0/±} and f^{XY} symbolic definitions
 │
 │ # Tests
@@ -1088,6 +1089,131 @@ lensing family.
 - =probe_all_plans_inspect.py=, =probe_ee_plan_inspect.py=,
   =probe_eb_plan_inspect.py=, =probe_tb_plans.py= — plan
   coefficient/signature dumps for each estimator.
+
+** Estimator compiler milestone 5 — unified compile + search prototype ✅
+
+Status: =sym_utils/compile_qe.py= compiles BOTH the estimator and the
+Hu-Okamoto normalization $A_L$ from the same symbolic weight $g$.
+The A_L side is verified bit-for-bit against the pytempura-validated
+=norm_lens.qtt= (max rel diff $1.3 \times 10^{-14}$ over
+$L \in [20, 200]$).  A small search-tool prototype
+(=demo_search_unified.py=) shows the correct Hu-Okamoto weight rises
+to the top when candidates are ranked by A_L-normalized cross-
+correlation with a known $\phi_{\rm true}$.
+
+*Why this matters.*  Milestones 1–4 compiled the ESTIMATOR (takes
+data, produces $\hat\psi$).  For a search / discovery tool we also
+need A_L — without it, you can't form the unbiased reconstruction
+$\hat\phi = A_L \cdot \hat\psi$, and you can't rank candidates in a
+scale-invariant way.  The A_L machinery has always existed in
+=l12_sum.py= (the Σ/Γ kernel compiler, validated at 1e-12 relative
+difference on full-sky spectra in [[Validation]]); milestone 5 just
+wires it to the estimator pipeline so one symbolic expression drives
+both outputs.
+
+*API.*
+#+begin_src python
+from sym_utils.compile_qe import compile_qe
+
+estimator, A_L_fn, N_L_phi_fn = compile_qe(
+    g_symbolic,            # sympy expression for g = f / (Δ · hCxx · hCyy)
+    lmax=200,
+    Delta=2,
+    hCxx=hCT, hCyy=hCT,    # IV-filter Function classes in g
+    user_funcs=[hCT, CT],  # all Function classes in g (positional order
+                           # of the returned fn's spectrum args)
+    px=px,                 # or nside=..., or shape+wcs for CAR
+)
+#+end_src
+
+=estimator= drives =compile_native= as before; =A_L_fn(*spectra)=
+evaluates the Hu-Okamoto normalization array; =N_L_phi_fn(*spectra)=
+gives the reconstruction noise power
+$A_L^2 \cdot \langle g^2 \cdot \hat C_{\rm XX}(\ell_1) \cdot \hat
+C_{\rm YY}(\ell_2) \rangle / (2L+1)$.
+
+*A_L derivation in one line.*  For $g = f / (\Delta \hat C_{\rm XX}
+\hat C_{\rm YY})$:
+
+$$A_L^{-1}(L) = \frac{1}{2L+1} \sum_{\ell_1 \ell_2} f \cdot g
+             = \frac{1}{2L+1} \sum_{\ell_1 \ell_2} g^2 \cdot \Delta \cdot
+               \hat C_{\rm XX}(\ell_1) \cdot \hat C_{\rm YY}(\ell_2)$$
+
+(The second form avoids the user writing $f$ separately; compile_qe
+just squares the user's $g$, multiplies by $\Delta \hat C \hat C$,
+=cancel()= s the $1/\hat C$ factors, and hands the result to
+=L12SumCompiler=.  For ζ^- estimators like TB/EB the imaginary
+coefficients are carried through the atomic tree correctly because
+the normalization integrand is $|g|^2 = g \cdot \bar g$; in practice
+$g \cdot g$ gives the same result since the $i$ factors square to
+$-1$ and the integrand contains a consistent sign.)
+
+*Search prototype (=demo_search_unified.py=).*  Enumerate 5 candidate
+weights for CMB lensing TT (correct Hu-Okamoto, wrong ladder factor,
+wrong 3j m-row, no CT response, trivial 3j "garbage"), compile each
+uniformly through compile_qe, apply each to a pixell-lensed CMB
+simulation with known $\phi_{\rm true}$, and rank by the mode-count-
+weighted cross-correlation coefficient of $A_L \cdot \hat\psi$ against
+$\phi_{\rm true}$:
+
+| rank | $\langle r(L) \rangle$ | candidate                   |
+|------+------------------------+-----------------------------|
+|    1 | +0.411                 | f_TT (Hu-Okamoto correct)   |
+|    2 | +0.361                 | f_TT wrong ladder (a(l,2))  |
+|    3 | +0.277                 | f_TT wrong 3j m-row         |
+|    4 | +0.243                 | f_TT no CT response         |
+|    5 | +0.145                 | garbage (trivial 3j)        |
+
+The correct weight wins decisively; close structural variants score
+visibly lower; unrelated physics collapses toward zero.
+
+*Gauge subtlety with pure-Fisher scoring.*  A naive FOM
+=Fisher = sum (2L+1) / N_L^phi= appears attractive (no oracle
+$\phi_{\rm true}$ needed) but is *gauge-dependent* under $g \to
+\alpha g$: because the user-supplied $g$ treats $f$ as derived
+($f = g \cdot \Delta \hat C \hat C$), rescaling $g$ rescales both
+response and noise non-uniformly.  Pure-Fisher therefore ranks
+strawman candidates above the correct f_TT in the demo.  The
+gauge-invariant quantity is the cross-correlation coefficient of the
+A_L-normalized output with any proxy $\phi$ signal (simulation,
+galaxy-cross-correlation, etc.) — that's what the prototype uses.
+=demo_search_fisher.py= is kept as an illustration of the pure-Fisher
+pathology.
+
+*What milestone 5 unlocks.*  A symbolic-search pipeline where each
+candidate weight is compiled into a *self-consistent triple*
+(estimator, A_L, N_L^phi) in one call, evaluated on data, and ranked.
+Remaining pieces for a production search tool:
+
+1. *Grammar enumerator* — currently candidates are hand-picked.  BFS
+   over the expression grammar $\{\text{wigner\_3j}, a(\ell, s),
+   C_{\rm spectrum}, P\}$ up to a size budget (~50 lines).
+2. *E-graph collapse* — many enumerated candidates differ only by
+   scalar multiples, 3j column permutations, or $P$ absorption.
+   Equality saturation (already flagged under [[Future Work]] below)
+   would canonicalize them automatically.
+3. *Gauge-fixing for Fisher ranking* — if oracle-free scoring is
+   required, rescale each candidate's $g$ so that $A_L$ at a
+   reference $L$ matches a common value, then compare $N_L^\phi$
+   elsewhere.  One line in the scoring pass.
+4. *Objective for unknown-field discovery* — the deepest gap, and
+   outside the engine scope.  Candidates: max non-Gaussianity
+   response, orthogonality to known contaminants, cross-correlation
+   with an external tracer.
+
+Items 1–3 are ~a week each.  Item 4 is the actual research question.
+
+*Scripts retained for diagnostic purposes.*
+
+- =demo_search_unified.py= — canonical search demo with both
+  cross-correlation and Fisher rankings.
+- =demo_search_fisher.py= — pure-Fisher ranking showing the gauge
+  pathology.
+- =demo_search_diag.py= — per-L breakdown that surfaced the need for
+  (2L+1)-weighted $\langle r(L) \rangle$ (naive global xcorr is
+  dominated by low-$L$ $\phi$ power where the QE has no support).
+- =demo_search_lensing.py= — earlier iteration using cross-
+  correlation only (without A_L compilation).
 
 ** Pattern-based rewrite rules (Rule / Prewalk / Postwalk)
 

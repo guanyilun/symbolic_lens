@@ -1031,6 +1031,42 @@ estimators.  Adding a new estimator is reduced to writing its
 symbolic =W= and the resulting =f^{XY}=; the emitter handles
 everything else.
 
+*Beyond lensing: =qe_shear= bit-for-bit.*  The Schaan-Ferraro CMB
+shear estimator =qe_shear= falls OUTSIDE the Namikawa
+$W^{x,0/\pm}$ family: it uses a *chained* gradient filter
+$\sqrt{(\ell-1)\ell(\ell+1)(\ell+2)}$ (three ladder hops fused), an
+asymmetric normalization (only the X-leg is IV-filtered, Y-leg is
+plain T), and $|s_L| = 2$ output via a spin-2 SHT.  A one-line
+symbolic definition
+
+#+begin_src python
+g_shear = sp_sqrt((l1-1)*l1*(l1+1)*(l1+2)) * gamma_f(l1, l, l2) * \
+          wigner_3j(l, l1, l2, 2, -2, 0) / hCT(l1)
+#+end_src
+
+compiles through =compile_native= and matches =qe_shear= BIT-FOR-BIT
+(std/mean = 4.7e-16 across all 20267 modes, constant pair_coeff
+$-1/(4\sqrt\pi) = -0.14105$).  No new rules were needed — but rules
+1 and 7 required refinement (both had originally been too eager):
+
+- *Rule 1 refinement.*  The L-side mlmax zeroing (=L_fl[lmax] = 0=)
+  mirrors falafel's =deflection_map_to_phi_curl_alms=, which builds
+  a length-mlmax $\sqrt{L(L+1)}$ filter.  Shear/source/mask don't go
+  through that path; they compute =L_factor = Const(1)= symbolically.
+  Rule 1 now skips the zeroing when =plan.L_factor= is Const(1).
+
+- *Rule 7 refinement.*  Detection of the int-truncatable ladder now
+  skips *chained* ladders (filters containing sqrt(l)·sqrt(l+1)
+  alongside a polarization ladder).  Falafel evaluates chained
+  filters as a single =np.sqrt(int_product)= (float) via =cs.almxfl=,
+  not through the buggy =_gradient_spin= path.  Only isolated
+  polarization ladders get int-truncated.
+
+The qe_shear result validates that the engine handles *chained
+gradient ladders*, *asymmetric normalization*, and *higher output
+spin* ($|s_L| = 2$) — a genuine extension beyond the Namikawa
+lensing family.
+
 *Probe scripts (in repo root, retained for diagnostics).*
 
 - =probe_regression_final.py= — canonical regression across all 6
@@ -1041,6 +1077,10 @@ everything else.
 - =probe_int_trunc_error_summary.py= — quantifies the upstream falafel
   int-truncation error per-ℓ and signal-weighted up to ℓmax = 3000;
   the source of the impact tables documented above.
+- =probe_qe_shear_final.py= — canonical qe_shear regression:
+  symbolic f_shear vs inlined falafel.qe.qe_shear, bit-for-bit
+  (std/mean ~5e-16).  Demonstrates the engine works on estimators
+  outside the Namikawa lensing family.
 - =probe_te_halves.py= — TE pol-half vs temp-half breakdown that led
   to rule 5.
 - =probe_eb_per_half.py= — EB structural breakdown showing the

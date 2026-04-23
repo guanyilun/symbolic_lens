@@ -61,6 +61,7 @@ from .engine.enumerate import (
     enumerate_candidates, score_candidates,
     m_triples, leg_filters, canonical_key,
 )
+from .engine.search import SearchCase, run_search, print_summary
 from .engine.estimator_native import (
     build_estimator,
     compile_native,        # low-level: raw (alm_pair, spin_alm) interface
@@ -95,6 +96,7 @@ __all__ = [
     "fisher_fom", "cross_correlation_score", "oracle_rerank",
     "enumerate_candidates", "score_candidates",
     "m_triples", "leg_filters", "canonical_key",
+    "SearchCase", "run_search", "print_summary",
     # per-field convenience (bit-for-bit with falafel/pytempura)
     "compile_tt", "compile_ee", "compile_bb",
     "compile_tb", "compile_eb", "compile_te",

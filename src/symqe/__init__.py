@@ -56,7 +56,7 @@ from .engine.namikawa import (
 from .engine.estimator import compile_estimator, EstimatorTerm, pretty, pretty_grouped
 from .engine.l12_sum import compile_norm, NormCompiler
 from .engine.compile_qe import compile_qe, compile_qe_from_f
-from .engine.scoring import fisher_fom
+from .engine.scoring import fisher_fom, cross_correlation_score
 from .engine.enumerate import (
     enumerate_candidates, score_candidates,
     m_triples, leg_filters, canonical_key,
@@ -92,7 +92,7 @@ __all__ = [
     "compile_estimator", "compile_norm", "compile_qe", "compile_qe_from_f",
     "build_estimator", "compile_native",
     # scoring / search
-    "fisher_fom",
+    "fisher_fom", "cross_correlation_score",
     "enumerate_candidates", "score_candidates",
     "m_triples", "leg_filters", "canonical_key",
     # per-field convenience (bit-for-bit with falafel/pytempura)

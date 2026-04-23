@@ -67,3 +67,41 @@ def fisher_fom(N_L_phi, A_L, *, L_range, L_ref):
         return -np.inf
     raw = np.sum((2.0 * Ls[valid] + 1.0) / N_L_phi[Ls[valid]])
     return float(aL_ref * raw)
+
+
+def cross_correlation_score(phi_hat_alm, phi_true_alm, *, L_range):
+    """Mode-count-weighted cross-correlation coefficient ⟨r(L)⟩.
+
+    ``r(L) = C_L^{phi_hat × phi_true} / sqrt(C_L^{phi_hat} · C_L^{phi_true})``
+    averaged over ``L_range`` with weights (2L+1).  Inherently
+    scale-invariant (unaffected by phi_hat → α·phi_hat), so this is a
+    valid gauge-invariant FOM when an oracle reference for phi exists
+    (simulation, cross with external tracer, etc.).
+
+    Parameters
+    ----------
+    phi_hat_alm : 1D complex healpy alm
+        Reconstructed phi (already A_L-normalized).
+    phi_true_alm : 1D complex healpy alm
+        Reference phi.
+    L_range : iterable of int
+
+    Returns
+    -------
+    float
+        ⟨r(L)⟩ in (-1, +1).  Higher = better reconstruction.  Returns
+        -inf if both spectra are zero or any spectrum is non-finite.
+    """
+    import healpy as hp
+    Ls = np.asarray(list(L_range), dtype=int)
+    cl_h = hp.alm2cl(np.asarray(phi_hat_alm))
+    cl_p = hp.alm2cl(np.asarray(phi_true_alm))
+    cl_x = hp.alm2cl(np.asarray(phi_hat_alm), np.asarray(phi_true_alm))
+    denom = np.sqrt(cl_h * cl_p)
+    valid = (denom[Ls] > 0) & np.isfinite(cl_x[Ls]) & np.isfinite(denom[Ls])
+    if not np.any(valid):
+        return -np.inf
+    r = np.zeros_like(cl_x[Ls], dtype=float)
+    r[valid] = cl_x[Ls[valid]] / denom[Ls[valid]]
+    w = (2.0 * Ls + 1.0)
+    return float(np.sum(w[valid] * r[valid]) / np.sum(w[valid]))

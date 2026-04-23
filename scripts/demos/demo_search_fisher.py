@@ -1,24 +1,19 @@
-"""Expression-space search for CMB lensing QE — Fisher-scored version.
+"""Expression-space search for CMB lensing QE — Fisher-scored version,
+with a side-by-side comparison of raw Fisher (gauge-pathological) vs
+gauge-fixed Fisher.
 
-Uses compile_qe to emit both the estimator and the symbolic A_L for
-each candidate weight.  Ranks candidates by Fisher information
-(lower A_L = better reconstruction noise = higher SNR on phi_true).
-
-Compare to demo_search_lensing.py which ranks by one-realization
-cross-correlation — that's noisier and the gap between correct and
-close-wrong candidates is subtle.  Fisher scoring uses the full
-mode-counting analytic normalization, so the gap is sharp.
+The raw Fisher sum ``Σ (2L+1)/N_L^phi`` is gauge-dependent: under
+``g → α·g`` the derived f scales as α too, N_L^phi ∝ 1/α², and the
+raw sum ∝ α².  ``sq.fisher_fom`` multiplies by ``A_L(L_ref)`` to cancel
+the α² — so the rank is invariant under a pure rescaling.
 """
 import numpy as np
 import healpy as hp
 from sympy import sympify, sqrt as sp_sqrt
 
-from symqe.engine.l12_sum import l, l1, l2, wigner_3j, P
-from symqe.engine.namikawa import (
-    hCT, CT, gamma_f, a, a_plus, a_minus, q_plus,
-)
-from symqe.engine.compile_qe import compile_qe
-from symqe.engine.estimator_native import Pixelization, scalar_pair
+import symqe as sq
+from symqe import l, l1, l2, wigner_3j, P, hCT, CT, gamma_f, a, a_plus, a_minus, q_plus
+from symqe import Pixelization, scalar_pair, compile_qe, fisher_fom
 
 LMAX = 200   # keep modest so normalization compile is quick
 ell = np.arange(LMAX + 1, dtype=float)
@@ -81,42 +76,55 @@ for name, g in candidates.items():
         compiled[name] = (None, None, None, f"{type(e).__name__}: {str(e)[:60]}")
 
 
-# --- score each: integrated 1/N_L^phi (Fisher info) over L range ---
-def fisher_score(N_L_phi_fn, L_lo=40, L_hi=180):
-    """Total Fisher info: sum_L (2L+1) / N_L^phi.
-    This IS scale-invariant under g -> α·g and reflects actual SNR."""
-    N = N_L_phi_fn(ocltt, cltt_theory)
-    Ls = np.arange(L_lo, L_hi + 1)
-    good = np.isfinite(N[Ls]) & (N[Ls] > 0)
-    return np.sum((2 * Ls[good] + 1) / N[Ls[good]])
+L_LO, L_HI, L_REF = 40, 180, 80
 
 
-print(f"{'rank':>4s}  {'Fisher':>12s}  {'N_L^φ(L=50)':>14s}  {'A_L(L=50)':>14s}  candidate")
-print("-" * 90)
-results = []
+def raw_fisher(N_L_phi):
+    Ls = np.arange(L_LO, L_HI + 1)
+    good = np.isfinite(N_L_phi[Ls]) & (N_L_phi[Ls] > 0)
+    return float(np.sum((2 * Ls[good] + 1) / N_L_phi[Ls[good]]))
+
+
+rows = []
 for name, (est, A_L_fn, N_L_phi_fn, err) in compiled.items():
     if err is not None:
-        results.append((name, -np.inf, np.inf, np.inf, err))
+        rows.append((name, -np.inf, -np.inf, np.inf, np.inf, err))
         continue
     try:
-        F = fisher_score(N_L_phi_fn)
-        N50 = float(N_L_phi_fn(ocltt, cltt_theory)[50])
-        A50 = float(A_L_fn(ocltt, cltt_theory)[50])
-        results.append((name, F, N50, A50, None))
+        N = N_L_phi_fn(ocltt, cltt_theory)
+        A = A_L_fn(ocltt, cltt_theory)
+        F_raw   = raw_fisher(N)
+        F_gauge = fisher_fom(N, A, L_range=range(L_LO, L_HI + 1), L_ref=L_REF)
+        rows.append((name, F_raw, F_gauge, float(N[50]), float(A[50]), None))
     except Exception as e:
-        results.append((name, -np.inf, np.inf, np.inf, f"score failed: {e}"))
+        rows.append((name, -np.inf, -np.inf, np.inf, np.inf, f"score failed: {e}"))
 
-results.sort(key=lambda t: t[1], reverse=True)
 
-for i, (name, F, N50, A50, err) in enumerate(results):
-    if err:
-        print(f"{i+1:>4d}  {'--':>12s}  {'--':>14s}  {'--':>14s}  {name}")
-        print(f"{'':>4s}  {'':>12s}  {'':>14s}  {'--':>14s}    ({err})")
-    else:
-        print(f"{i+1:>4d}  {F:>12.4e}  {N50:>14.4e}  {A50:>14.4e}  {name}")
+def print_ranked(rows, key_index, label):
+    order = sorted(rows, key=lambda r: r[key_index], reverse=True)
+    print(label)
+    print(f"{'rank':>4s}  {'score':>12s}  {'N_L^φ(50)':>12s}  {'A_L(50)':>12s}  candidate")
+    print("-" * 88)
+    for i, (name, F_raw, F_gauge, N50, A50, err) in enumerate(order):
+        if err:
+            print(f"{i+1:>4d}  {'--':>12s}  {'--':>12s}  {'--':>12s}  {name}  ({err})")
+        else:
+            score = (F_raw if key_index == 1 else F_gauge)
+            print(f"{i+1:>4d}  {score:>12.4e}  {N50:>12.4e}  {A50:>12.4e}  {name}")
+    print()
+
 
 print()
-print("Interpretation: Fisher = sum (2L+1)/N_L^phi, scale-invariant under g→αg.")
-print("Correct f_TT and scaled f_TT should TIE (response and noise both scale).")
-print("Wrong-ladder / wrong-m / no-response have larger N_L^phi → lower Fisher.")
-print("Garbage with no ladder diverges.")
+print_ranked(rows, 1, "=== Raw Fisher = Σ (2L+1)/N_L^phi  (gauge-DEPENDENT) ===")
+print_ranked(rows, 2, f"=== Gauge-fixed Fisher = A_L({L_REF})·Σ (2L+1)/N_L^phi ===")
+
+print("Interpretation:")
+print("  Raw Fisher:   5·f_TT scores 25× f_TT — pure gauge artifact.")
+print("  Gauge-fixed:  5·f_TT and f_TT TIE — the artifact is killed.")
+print()
+print("Residual caveat: candidates with structurally-different f (e.g. 'no CT")
+print("response') can still rank differently from Hu-Okamoto-correct f_TT,")
+print("because each candidate's N_L^phi is minimum-variance for its OWN")
+print("implied target f.  Fisher alone cannot distinguish 'good reconstruction")
+print("of the wrong thing' from 'good reconstruction of phi' — that requires")
+print("either oracle cross-correlation or compile_qe_from_f with a fixed target.")

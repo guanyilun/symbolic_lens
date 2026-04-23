@@ -1,18 +1,20 @@
-"""Unified compilation of a symbolic QE weight g into BOTH the estimator
+"""Unified compilation of a symbolic QE weight into BOTH the estimator
 and the Hu-Okamoto normalization A_L, from one symbolic expression.
 
-Given a symbolic weight ``g(l1, L, l2)`` = f/(Δ · hCxx(l1) · hCyy(l2)),
-this wires two existing pipelines:
+Two entry points:
 
-  * ``compile_estimator → compile_native``  →  estimator fn(X, Y, spec)
-  * ``NormCompiler``                         →  A_L^{-1} fn(L, *spectra)
+  * ``compile_qe(g, ...)``         — take the filter g; derive f = g·Δ·hC·hC.
+  * ``compile_qe_from_f(f, ...)``  — take the physical weight f; derive
+                                     the minimum-variance filter g = f/(Δ·hC·hC).
 
-The normalization integrand is derived directly from ``g``:
-   A_L^{-1}(L) = (1/(2L+1)) · sum_{l1,l2} g² · Δ · hCxx(l1) · hCyy(l2)
-(using the identity ``f · g = g² · Δ · hCxx · hCyy`` for real g).
+The ``_from_f`` variant is preferred for search work because it forces
+apples-to-apples ranking: the engine always pairs each candidate f with
+its minimum-variance g, so Fisher comparisons reflect structural
+differences in f rather than filter-choice artifacts.
 
-For ζ^- estimators (EB, TB) the user can pass ``conjugate_g`` that
-flips I → -I on one copy before multiplying.
+Both variants return ``(estimator, A_L_fn, N_L_phi_fn)``.  See
+``symqe.engine.scoring.fisher_fom`` for a gauge-fixed scalar FOM
+suitable for ranking candidates.
 """
 import numpy as np
 from sympy import cancel, Symbol, Function
@@ -76,7 +78,68 @@ def compile_qe(
 
     Spectra are positional, in the order of ``user_funcs``.
     """
+    return _compile_qe_core(
+        g_symbolic=g_symbolic, f_symbolic=None,
+        lmax=lmax, Delta=Delta, hCxx=hCxx, hCyy=hCyy,
+        user_funcs=user_funcs, rlmin=rlmin, rlmax=rlmax,
+        px=px, nside=nside, shape=shape, wcs=wcs,
+    )
+
+
+def compile_qe_from_f(
+    f_symbolic,
+    lmax,
+    *,
+    Delta,
+    hCxx,
+    hCyy,
+    user_funcs,
+    rlmin=2,
+    rlmax=None,
+    px=None,
+    nside=None,
+    shape=None,
+    wcs=None,
+):
+    """Compile a physical weight ``f`` into (estimator, normalization, noise).
+
+    The engine derives the minimum-variance filter ``g = f/(Δ·hCxx·hCyy)``
+    internally, so you cannot accidentally pair a candidate ``f`` with a
+    non-optimal filter.  Use this variant for search/ranking work.
+
+    Parameters and return value are the same as :func:`compile_qe`, but
+    the first argument is the physical weight ``f_symbolic`` rather than
+    the filter ``g_symbolic``.
+
+    Response (A_L⁻¹) uses the gauge-correct form ``Σ g·f / (2L+1)``
+    (equivalent to ``Σ f²/(Δ·hC·hC)/(2L+1)`` with the optimal g);
+    variance uses ``Σ g²·hC·hC / (2L+1)``.  Together with
+    :func:`~symqe.engine.scoring.fisher_fom` the outputs give a
+    gauge-invariant ranking under ``f → α·f``.
+    """
+    return _compile_qe_core(
+        g_symbolic=None, f_symbolic=f_symbolic,
+        lmax=lmax, Delta=Delta, hCxx=hCxx, hCyy=hCyy,
+        user_funcs=user_funcs, rlmin=rlmin, rlmax=rlmax,
+        px=px, nside=nside, shape=shape, wcs=wcs,
+    )
+
+
+def _compile_qe_core(
+    *, g_symbolic, f_symbolic, lmax, Delta, hCxx, hCyy, user_funcs,
+    rlmin, rlmax, px, nside, shape, wcs,
+):
     rlmax = rlmax if rlmax is not None else lmax
+
+    # Derive whichever of (g, f) was not supplied.
+    if f_symbolic is None:
+        # Legacy path: user gave g; f is implicitly g·Δ·hC·hC.  A_L^{-1}
+        # integrand g·f = g²·Δ·hC·hC (equal only when f is actually the
+        # implied optimal response for this g).
+        f_symbolic = g_symbolic * Delta * hCxx(l1) * hCyy(l2)
+    if g_symbolic is None:
+        # Gauge-correct path: user gave f; derive minimum-variance filter.
+        g_symbolic = f_symbolic / (Delta * hCxx(l1) * hCyy(l2))
 
     # --- Estimator side ---
     terms = strip_gamma(compile_estimator(g_symbolic))
@@ -85,14 +148,11 @@ def compile_qe(
     )
 
     # --- Normalization side ---
-    # A_L^{-1}:  (1/(2L+1)) · sum f·g  where f = g · Δ · hCxx · hCyy
-    # So A_L^{-1} integrand = (1/(2L+1)) · g² · Δ · hCxx(l1) · hCyy(l2)
-    integrand_AL_inv = g_symbolic * g_symbolic * Delta * hCxx(l1) * hCyy(l2) / (2 * l + 1)
-    integrand_AL_inv = cancel(integrand_AL_inv)
+    # Response (A_L^{-1}):  (1/(2L+1)) · sum g · f
+    integrand_AL_inv = cancel(g_symbolic * f_symbolic / (2 * l + 1))
 
-    # Noise variance per mode:  (1/(2L+1)) · sum g² · hCxx(l1) · hCyy(l2)
-    integrand_v = g_symbolic * g_symbolic * hCxx(l1) * hCyy(l2) / (2 * l + 1)
-    integrand_v = cancel(integrand_v)
+    # Noise variance per mode: (1/(2L+1)) · sum g² · hCxx(l1) · hCyy(l2)
+    integrand_v = cancel(g_symbolic * g_symbolic * hCxx(l1) * hCyy(l2) / (2 * l + 1))
 
     compiler = NormCompiler(lmax=lmax, rlmin=rlmin, rlmax=rlmax)
     AL_inv_fn, _ = compiler.build_and_compile(integrand_AL_inv, args=[l] + list(user_funcs))

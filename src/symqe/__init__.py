@@ -55,7 +55,8 @@ from .engine.namikawa import (
 # -- Compile entry points ----------------------------------------------
 from .engine.estimator import compile_estimator, EstimatorTerm, pretty, pretty_grouped
 from .engine.l12_sum import compile_norm, NormCompiler
-from .engine.compile_qe import compile_qe
+from .engine.compile_qe import compile_qe, compile_qe_from_f
+from .engine.scoring import fisher_fom
 from .engine.estimator_native import (
     build_estimator,
     compile_native,        # low-level: raw (alm_pair, spin_alm) interface
@@ -84,8 +85,10 @@ __all__ = [
     "f_TT", "f_TE", "f_TB", "f_EE", "f_EB", "f_BB",
     "f_rot_EB", "f_rot_EE", "f_rot_TB", "f_ampl_TT",
     # compile (high-level + low-level)
-    "compile_estimator", "compile_norm", "compile_qe",
+    "compile_estimator", "compile_norm", "compile_qe", "compile_qe_from_f",
     "build_estimator", "compile_native",
+    # scoring / search
+    "fisher_fom",
     # per-field convenience (bit-for-bit with falafel/pytempura)
     "compile_tt", "compile_ee", "compile_bb",
     "compile_tb", "compile_eb", "compile_te",

@@ -1302,12 +1302,12 @@ and a working lensing oracle demo.  Turning the prototype into a general
 search tool needs:
 
 1. *Grammar enumerator* — candidates are currently hand-picked.  BFS
-   over $\{\text{wigner\_3j}, a(\ell, s), C_{\rm spectrum}, P\}$ up to a
-   size budget.  ~50 lines.
-2. *E-graph collapse* — many enumerated candidates differ only by
-   scalar multiples, 3j column permutations, or $P$ absorption.
-   Equality saturation (see section below) would canonicalize them
-   automatically, shrinking the search space.
+   over the DSL the compiler already accepts (see "Search-space scope"
+   below), canonicalized by plain structural dedup to start.  ~50-100
+   lines of enumerator + a few hundred of scoring harness.
+2. *E-graph collapse* — if structural dedup proves insufficient,
+   canonicalize via equality saturation (see section below).  Defer
+   until enumeration sizes force the issue.
 3. *Objective for unknown-field discovery* — the deepest gap, and
    outside the engine scope.  Candidates: max non-Gaussianity
    response, orthogonality to known contaminants, cross-correlation
@@ -1318,6 +1318,51 @@ now done — see =sq.fisher_fom= and =sq.compile_qe_from_f= under
 [[Milestone 5]]. The gauge artifact under $g \to \alpha g$ is killed;
 the residual "different physical target" ambiguity needs either
 an oracle or a fixed target $f$.)
+
+*Search-space scope.*  The compiler's de facto DSL for an estimator
+term is
+
+$$\text{coeff} \cdot L(\ell) \cdot X(\ell_1) \cdot Y(\ell_2) \cdot
+  \text{w3j}(\ell, \ell_1, \ell_2;\, m_L, m_X, m_Y) \cdot P^{\,0\,|\,1}$$
+
+with $m_L + m_X + m_Y = 0$, integer $|m_*| \le 3$, and legs $L/X/Y$
+each a product of atoms in one $\ell$-variable drawn from
+$\{\sqrt{\text{linear-in-}\ell}, a(\ell, s), C_\ell^*, (2\ell+1)^k,
+\gamma_f\}$.  Coefficients in $\mathbb{Z} + i\mathbb{Z}$ (the
+imaginary part comes from $\zeta^- = i$ on W^-).  P marks 3j
+column-swap parity and reduces under $P^2 = 1$.
+
+*This is broader than Namikawa.*  Namikawa picks a few specific
+m-triples (e.g. (1,0,-1), (1,2,-3), (-1,2,-1)) and specific ladder
+products.  Any m-triple with $|m| \le 3$ compiles, any user-declared
+spectrum function compiles, chained ladders compile (qe_shear uses a
+4-factor chain, validated), non-optimal filters compile.  Physics
+claim: if an unknown field modulates a CMB 2-point function linearly,
+its quadratic estimator weight lives in this DSL — the spin-coupling
+algebra forces Wigner-3j with spins in the m-row.
+
+*Outside the DSL:* multi-3j per term (that's the W² normalization
+side — goes through =compile_norm= / =NormCompiler=), non-factorable
+legs (e.g. $C(\ell_1 + \ell_2)$), $|\text{spin}| > 3$ (SHT primitive
+cap), trispectrum / 4-point estimators.
+
+*First-enumerator config (already decided).*
+- m-triples with $|m_*| \le 3$, $\sum m = 0$  (~25 triples).
+- Per-leg filter: product of $\le 2$ factors from
+  $\{1, a(\ell, s)\text{ for } s \in [-3,3], C\text{-spectra},
+  \sqrt{\ell(\ell+1)}\}$.
+- Coefficient in $\{1, -1, i, -i\}$ and $P \in \{0, 1\}$.
+- Canonicalization: plain structural dedup (e-graph deferred).
+
+Deferred questions at implementation time:
+- Whether to auto-restrict spectrum atoms to the input-field type
+  (T-leg gets only $C^T$-like spectra) vs allow mismatches that
+  score badly but might surface unexpected couplings.
+- Whether to admit a user-declared "unknown spectrum" symbol for
+  new-physics discovery (needs a runtime value — Monte Carlo prior,
+  parameterized fit, or cross-tracer proxy).
+
+See also =memory/search_space.md= for the full scope analysis.
 
 ** Pattern-based rewrite rules (Rule / Prewalk / Postwalk)
 

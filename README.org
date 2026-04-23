@@ -1290,6 +1290,75 @@ discovery objective) are listed under [[Future Work]] below.
   dominated by low-$L$ $\phi$ power where the QE has no support).
 - =scripts/demos/demo_search_lensing.py= — earlier iteration using cross-
   correlation only (without A_L compilation).
+- =scripts/demos/demo_search_enum.py= — grammar enumeration over the DSL,
+  gauge-fixed Fisher ranking, references injected for comparison
+  (see [[Milestone 6]]).
+- =scripts/demos/demo_search_oracle.py= — two-pass Fisher+oracle
+  search: enumerate → Fisher prune → cross-correlate with simulated
+  phi_true → rerank.
+
+** Milestone 6 — grammar enumeration + two-pass search ✅
+
+Status: the pieces from milestone 5's prototype (=compile_qe_from_f=,
+=fisher_fom=) are wired to a BFS enumerator over the compiler's DSL,
+and a two-pass ranker (Fisher prune → oracle cross-correlation) brings
+Hu-Okamoto $f^{TT}$ from top 18% under Fisher alone to top 1% under
+the combined score.
+
+*Enumerator* (=symqe.engine.enumerate=).  BFS over
+
+$$\text{coeff} \cdot \gamma_f \cdot X(\ell_1) \cdot Y(\ell_2) \cdot
+  \text{w3j}(\ell, \ell_1, \ell_2;\, m_L, m_X, m_Y) \cdot
+  \text{parity}$$
+
+with ``parity_factors`` defaulting to $(1, P, 1+P, 1-P)$ — the latter
+two are Namikawa's $q_\pm = (1 \pm P)/2$ selectors (up to scale),
+which is how $W^{x,\pm}$ parity gets into a single candidate expression.
+``symmetrize_l1l2`` optionally emits $\text{expr} + \text{swap}(\text{expr})$,
+which is how TT/EE/BB-style symmetric estimators are built in one step.
+
+Plain structural dedup via =canonical_key= — the canonical form is
+the sorted tuple of =EstimatorTerm= signatures from
+=compile_estimator=, so 3j column permutations and $P^2 = 1$ are
+already collapsed by the engine.
+
+*Two-pass search* (=scripts/demos/demo_search_oracle.py=).  First pass:
+score all candidates by gauge-fixed Fisher FOM (cheap, no simulation);
+keep the top-K.  Second pass: simulate a lensed CMB with known
+$\phi_{\rm true}$, apply each surviving estimator, form
+$\hat\phi = A_L \cdot \hat\psi$, rank by
+=cross_correlation_score= — the mode-count-weighted
+$\langle r(L) \rangle$ between $\hat\phi$ and $\phi_{\rm true}$.
+
+*Regression on lensing TT* (lmax=100, nside=64, 4050 enumerated):
+
+| Reference candidate | Fisher rank | Oracle rank | Oracle $\langle r \rangle$ |
+|---------------------+-------------+-------------+---------------------------|
+| $f^{TT}$ correct    | 729 / 4053  |   8 / 1001  | +0.153 |
+| $f^{TT}$ wrong ladder | 217 / 4053 |   6 / 1001  | +0.159 |
+| $f^{TT}$ wrong m-row | 4053 / 4053 | 1001 / 1001 | $-\infty$ |
+
+Oracle discriminates correctly (wrong-m-row eliminated; correct enters
+top 10).  Wrong-ladder edges out correct by ~4% — within single-
+realization noise at lmax=100; averaging over sims or going to
+lmax>200 should close the gap.  Top-5 oracle ranks are enumerated
+candidates *better* than any hand-coded reference: close structural
+siblings of Hu-Okamoto with ladder on one leg only, $\langle r \rangle
+\approx 0.168$.  That's the enumerator doing its job — surfacing
+"nearby variants" the user didn't hand-pick.
+
+*Runtime budget.*  ~12 min end-to-end (enumerate 32s, Fisher 368s,
+oracle rerank on top 1000: 449s).  Bottleneck is =NormCompiler=
+being invoked twice per candidate (for $A_L^{-1}$ and for the noise
+variance); cache-sharing is an obvious optimization.
+
+*What milestone 6 unlocks.*  The pipeline is now a bona-fide symbolic
+search tool: the user writes down the grammar scope and the physical
+target (via simulation or cross-tracer), and the pipeline explores,
+scores, and ranks candidate weight expressions without hand-picking.
+The remaining Future Work item is the *objective for unknown-field
+discovery* — what FOM replaces ``phi_true cross-correlation`` when the
+target physics is genuinely unknown.
 
 * Future Work
 
@@ -1297,27 +1366,28 @@ Items that are genuinely open — work has not started or is partial.
 
 ** Production search tool
 
-Milestone 5 established the compilation triple (estimator, A_L, N_L^phi)
-and a working lensing oracle demo.  Turning the prototype into a general
-search tool needs:
+Milestones 5 and 6 established the compilation triple (estimator,
+A_L, N_L^phi), gauge-fixed Fisher, and the grammar-enumerator
+two-pass search.  What remains open:
 
-1. *Grammar enumerator* — candidates are currently hand-picked.  BFS
-   over the DSL the compiler already accepts (see "Search-space scope"
-   below), canonicalized by plain structural dedup to start.  ~50-100
-   lines of enumerator + a few hundred of scoring harness.
-2. *E-graph collapse* — if structural dedup proves insufficient,
-   canonicalize via equality saturation (see section below).  Defer
-   until enumeration sizes force the issue.
-3. *Objective for unknown-field discovery* — the deepest gap, and
-   outside the engine scope.  Candidates: max non-Gaussianity
-   response, orthogonality to known contaminants, cross-correlation
-   with an external tracer.  This is the actual research question.
+1. *E-graph collapse* — plain structural dedup (from
+   =canonical_key=) already collapses 3j column permutations and
+   $P^2 = 1$.  Still-redundant candidates (e.g., coeff-sign
+   variants that produce identical Fisher/oracle scores) can be
+   merged via equality saturation once search sizes force the
+   issue.  Currently manageable (~4000 candidates for a TT
+   grammar).
+2. *Objective for unknown-field discovery* — the deepest gap, and
+   outside the engine scope.  When the target physics is genuinely
+   unknown there is no oracle $\phi_{\rm true}$ to cross-correlate
+   against.  Candidates: max non-Gaussianity response,
+   orthogonality to known contaminants, cross-correlation with an
+   external tracer.  This is the actual research question.
 
 (Gauge-fixing for Fisher ranking was originally on this list; it is
 now done — see =sq.fisher_fom= and =sq.compile_qe_from_f= under
-[[Milestone 5]]. The gauge artifact under $g \to \alpha g$ is killed;
-the residual "different physical target" ambiguity needs either
-an oracle or a fixed target $f$.)
+[[Milestone 5]].  The grammar enumerator was also on this list, now
+done under [[Milestone 6]].)
 
 *Search-space scope.*  The compiler's de facto DSL for an estimator
 term is
@@ -1346,23 +1416,25 @@ side — goes through =compile_norm= / =NormCompiler=), non-factorable
 legs (e.g. $C(\ell_1 + \ell_2)$), $|\text{spin}| > 3$ (SHT primitive
 cap), trispectrum / 4-point estimators.
 
-*First-enumerator config (already decided).*
-- m-triples with $|m_*| \le 3$, $\sum m = 0$  (~25 triples).
-- Per-leg filter: product of $\le 2$ factors from
-  $\{1, a(\ell, s)\text{ for } s \in [-3,3], C\text{-spectra},
-  \sqrt{\ell(\ell+1)}\}$.
-- Coefficient in $\{1, -1, i, -i\}$ and $P \in \{0, 1\}$.
-- Canonicalization: plain structural dedup (e-graph deferred).
+*Enumerator defaults* (from =symqe.enumerate_candidates= —
+the TT demo uses the tight config =coeffs=(1,)=, ladders
+$\{0, \pm 2\}$, parity $\{1, 1+P\}$, $|m| \le 2$, CT spectrum, 4050
+candidates).  User-facing knobs: ``m_max``, ``coeffs``,
+``parity_factors``, ``max_leg_factors``, ``ladder_spins``,
+``spectra_X``/``spectra_Y``, ``restrict_m_L``, ``symmetrize_l1l2``.
+Default parity factors $(1, P, 1+P, 1-P)$ cover $q_\pm$ selection.
 
-Deferred questions at implementation time:
+Deferred questions (still open at 2026-04-23):
 - Whether to auto-restrict spectrum atoms to the input-field type
   (T-leg gets only $C^T$-like spectra) vs allow mismatches that
-  score badly but might surface unexpected couplings.
+  score badly but might surface unexpected couplings.  Currently
+  ``permissive``; the ``field_gating`` kwarg is reserved.
 - Whether to admit a user-declared "unknown spectrum" symbol for
   new-physics discovery (needs a runtime value — Monte Carlo prior,
   parameterized fit, or cross-tracer proxy).
 
-See also =memory/search_space.md= for the full scope analysis.
+See also =memory/search_space.md= and =memory/enumerator_state.md=
+for the full scope analysis and current search-pipeline state.
 
 ** Pattern-based rewrite rules (Rule / Prewalk / Postwalk)
 

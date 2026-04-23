@@ -1296,6 +1296,9 @@ discovery objective) are listed under [[Future Work]] below.
 - =scripts/demos/demo_search_oracle.py= — two-pass Fisher+oracle
   search: enumerate → Fisher prune → cross-correlate with simulated
   phi_true → rerank.
+- =scripts/demos/demo_search_harness.py= — same lensing-TT case run
+  through the generic =sq.run_search= harness, with multi-seed
+  averaging support (see [[Milestone 7]]).
 
 ** Milestone 6 — grammar enumeration + two-pass search ✅
 
@@ -1359,6 +1362,63 @@ scores, and ranks candidate weight expressions without hand-picking.
 The remaining Future Work item is the *objective for unknown-field
 discovery* — what FOM replaces ``phi_true cross-correlation`` when the
 target physics is genuinely unknown.
+
+** Milestone 7 — generic multi-case harness ✅
+
+Status: =symqe.engine.search= wraps the milestone-6 pipeline in a
+reusable entry point so that each estimator case (lensing TT,
+rotation EB, source TT, …) is a configuration rather than a
+hand-written script.
+
+*API.*  A case is one ``SearchCase`` dataclass instance:
+
+#+begin_src python
+case = sq.SearchCase(
+    name="lensing-TT",
+    lmax=100,
+    grammar=dict(m_max=2, coeffs=(1,), parity_factors=(1, 1+P),
+                 max_leg_factors=2, ladder_spins=(0, 2, -2),
+                 spectra_X={"CT": CT}, spectra_Y={"CT": CT},
+                 restrict_m_L=(-1, 1), symmetrize_l1l2=True),
+    simulate=lambda seed: (X_input, Y_input, phi_true),  # user-supplied
+    compile_kwargs=dict(Delta=2, hCxx=hCT, hCyy=hCT,
+                        user_funcs=[hCT, CT], px=px),
+    spectra_for_fisher=(ocltt, cltt_theory),
+    spectra_for_estimator={"hCT": ocltt, "CT": cltt_theory},
+    fisher_L_range=(20, 80), fisher_L_ref=40,
+    oracle_L_range=(20, 80),
+    output_key=+1, top_k_for_oracle=1000,
+    references=[("f_TT correct", f_TT_correct()), ...],
+)
+result = sq.run_search(case, seeds=(0, 1, 2, 3))
+sq.print_summary(result, n_show=15)
+#+end_src
+
+Enumeration and Fisher scoring run once per case (spectra are
+seed-independent); the oracle pass loops over seeds.  Per-candidate
+oracle scores are aggregated into (mean, std) across seeds and the
+ranking is stable on the mean.
+
+*Performance bits enabled in this milestone.*
+- =score_candidates(..., return_bundles=True)= keeps the compiled
+  (estimator, $A_L$, $N_L^\phi$) bundle so the oracle pass skips
+  recompilation.
+- Shared GLQuad cache in =l12_sum._cached_glq= keyed on
+  $(\ell_{\max}, r\ell_{\max})$ — small win, but removes redundant
+  work across candidates in a batch.
+- =sq.oracle_rerank= is a library-level function; the harness and
+  ad-hoc scripts share one implementation.
+
+*What this unlocks for paper work.*  Adding a new case is now one
+``SearchCase`` dict — you supply a ``simulate`` callable that returns
+(X_input, Y_input, oracle_alm) for a given seed, and a grammar
+restriction.  The infrastructure for multi-seed statistical averaging
+is in place (``aggregate_across_seeds``); exercising it at scale
+is the next step.
+
+Regression under the new harness reproduces the milestone-6 ranks
+bit-for-bit: f_TT correct at 8/1001, wrong ladder 6/1001, wrong
+m-row 1001/1001 — pure refactor.
 
 * Future Work
 

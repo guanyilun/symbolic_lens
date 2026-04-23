@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "symqe"
+version = "0.1.0"
+description = "Symbolic compiler for CMB quadratic estimators"
+readme = "README.org"
+requires-python = ">=3.9"
+authors = [{ name = "Yilun Guan" }]
+license = { text = "MIT" }
+dependencies = [
+    "numpy",
+    "scipy",
+    "sympy",
+    "healpy",
+    "pixell",
+]
+
+[project.optional-dependencies]
+validation = ["pytempura"]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -243,6 +243,22 @@ def _normalize_w3j_args(node: AtomicFactor) -> AtomicFactor:
 
 # ----------------------------- code emission ----------------------------
 
+# GLQuad instances are expensive to build (node/weight tables up to O(lmax)).
+# For batch enumeration the same (lmax, rlmax) pair repeats thousands of
+# times, so memoize — keyed by (lmax, rlmax) since rlmin only affects the
+# filter partial, not the GLQuad itself.
+_GLQUAD_CACHE: dict = {}
+
+
+def _cached_glq(lmax: int, rlmax: int) -> "GLQuad":
+    key = (int(lmax), int(rlmax))
+    glq = _GLQUAD_CACHE.get(key)
+    if glq is None:
+        glq = GLQuad(int((3 * max(lmax, rlmax) + 1) / 2))
+        _GLQUAD_CACHE[key] = glq
+    return glq
+
+
 @dataclass
 class NormCompiler:
     """Compile a sympy expression into a numpy callable kernel(L, A, B, ...).
@@ -263,7 +279,7 @@ class NormCompiler:
     cf2cl: callable = field(init=False)
 
     def __post_init__(self):
-        glq = GLQuad(int((3 * max(self.lmax, self.rlmax) + 1) / 2))
+        glq = _cached_glq(self.lmax, self.rlmax)
         self.cl2cf = partial(glq.cf_from_cl, lmin=self.rlmin, lmax=self.rlmax)
         self.cf2cl = partial(glq.cl_from_cf, lmax=self.lmax)
 

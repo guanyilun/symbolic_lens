@@ -94,7 +94,7 @@ print(f"  {len(candidates)} candidates ({time.time()-t0:.1f}s)", flush=True)
 for label, expr in REFERENCES:
     candidates.append(({"label": label, "flavor": "reference"}, expr))
 
-print("Fisher pass (gauge-fixed)...", flush=True)
+print("Fisher pass (gauge-fixed) + cache bundles...", flush=True)
 t0 = time.time()
 fisher_results = sq.score_candidates(
     candidates,
@@ -106,6 +106,7 @@ fisher_results = sq.score_candidates(
     L_ref=L_REF,
     px=px,
     progress=False,
+    return_bundles=True,
 )
 print(f"  ranked {len(fisher_results)} ({time.time()-t0:.1f}s)", flush=True)
 
@@ -113,44 +114,25 @@ print(f"  ranked {len(fisher_results)} ({time.time()-t0:.1f}s)", flush=True)
 # --- keep top-K by Fisher (also keep references regardless) ----------
 fisher_top = fisher_results[:TOP_K_FOR_ORACLE]
 fisher_top_set = {id(r[2]) for r in fisher_top}
-ref_meta_set = {id(meta) for meta, _ in candidates if isinstance(meta, dict) and meta.get("flavor") == "reference"}
-for fom, meta, expr in fisher_results:
+for fom, meta, expr, bundle in fisher_results:
     if isinstance(meta, dict) and meta.get("flavor") == "reference" and id(expr) not in fisher_top_set:
-        fisher_top.append((fom, meta, expr))
+        fisher_top.append((fom, meta, expr, bundle))
         print(f"  (keeping reference '{meta['label']}' which fell outside Fisher top-K)")
 
 print(f"Oracle pass on {len(fisher_top)} candidates...", flush=True)
-
-
-# --- oracle rerank ----------------------------------------------------
 spec = {"hCT": ocltt, "CT": cltt_theory}
-oracle_results = []
 t0 = time.time()
-for i, (fom_fisher, meta, expr) in enumerate(fisher_top):
-    if i % 20 == 0:
-        print(f"  oracle {i}/{len(fisher_top)}...", flush=True)
-    try:
-        est, A_L_fn, _ = sq.compile_qe_from_f(
-            expr, LMAX, Delta=2, hCxx=hCT, hCyy=hCT,
-            user_funcs=[hCT, CT], px=px,
-        )
-        psi = est(sq.scalar_pair(T_lensed), sq.scalar_pair(T_lensed), spec)
-        # est returns dict {sL: alm}; lensing-vector output is at +1.
-        psi_alm = psi.get(+1, None)
-        if psi_alm is None:
-            oracle_results.append((-np.inf, fom_fisher, meta, expr))
-            continue
-        A_L = A_L_fn(ocltt, cltt_theory)
-        # phi_hat = A_L · psi  (multiply each l-mode by A_L[l])
-        phi_hat = hp.almxfl(np.asarray(psi_alm), np.where(np.isfinite(A_L), A_L, 0.0))
-        score = sq.cross_correlation_score(
-            phi_hat, phi_true, L_range=range(L_LO_ORACLE, L_HI_ORACLE + 1),
-        )
-    except Exception:
-        score = -np.inf
-    oracle_results.append((score, fom_fisher, meta, expr))
-
-oracle_results.sort(key=lambda r: r[0], reverse=True)
+oracle_results = sq.oracle_rerank(
+    fisher_top,
+    X_input=sq.scalar_pair(T_lensed),
+    Y_input=sq.scalar_pair(T_lensed),
+    spectra=spec,
+    phi_true_alm=phi_true,
+    spec_for_A_L=(ocltt, cltt_theory),
+    L_range=range(L_LO_ORACLE, L_HI_ORACLE + 1),
+    output_key=+1,
+    progress=True,
+)
 print(f"  oracle done ({time.time()-t0:.1f}s)", flush=True)
 print()
 

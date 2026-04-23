@@ -229,14 +229,24 @@ def score_candidates(
     shape=None,
     wcs=None,
     progress: bool = False,
+    return_bundles: bool = False,
 ):
     """Compile each candidate via compile_qe_from_f, score via fisher_fom,
-    return a sorted list of (score, metadata, expr).
+    return a sorted list of results.
 
     ``spectra_args`` is the positional spectrum tuple matching
     ``user_funcs`` (same convention as the returned A_L_fn / N_L_phi_fn
     of compile_qe_from_f).  Candidates that fail to compile or score
     non-finite get ``-inf``.
+
+    Parameters
+    ----------
+    return_bundles : bool
+        If True, each result is ``(score, meta, expr, bundle)`` where
+        ``bundle = (estimator, A_L_fn, N_L_phi_fn)`` or ``None`` on
+        compile failure.  Useful for chained Fisher + oracle passes
+        without recompiling.  Default False — results are
+        ``(score, meta, expr)`` for back-compat.
     """
     import numpy as np
     from .compile_qe import compile_qe_from_f
@@ -247,17 +257,22 @@ def score_candidates(
     for i, (meta, expr) in enumerate(cands):
         if progress and (i % 50 == 0):
             print(f"  scoring {i}/{len(cands)}...", flush=True)
+        bundle = None
         try:
-            _, A_L_fn, N_L_phi_fn = compile_qe_from_f(
+            est, A_L_fn, N_L_phi_fn = compile_qe_from_f(
                 expr, lmax, Delta=Delta, hCxx=hCxx, hCyy=hCyy,
                 user_funcs=user_funcs, px=px, nside=nside,
                 shape=shape, wcs=wcs,
             )
+            bundle = (est, A_L_fn, N_L_phi_fn)
             N = N_L_phi_fn(*spectra_args)
             A = A_L_fn(*spectra_args)
             fom = fisher_fom(N, A, L_range=L_range, L_ref=L_ref)
         except Exception:
             fom = -np.inf
-        results.append((fom, meta, expr))
+        if return_bundles:
+            results.append((fom, meta, expr, bundle))
+        else:
+            results.append((fom, meta, expr))
     results.sort(key=lambda r: r[0], reverse=True)
     return results

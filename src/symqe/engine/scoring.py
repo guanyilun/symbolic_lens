@@ -105,3 +105,69 @@ def cross_correlation_score(phi_hat_alm, phi_true_alm, *, L_range):
     r[valid] = cl_x[Ls[valid]] / denom[Ls[valid]]
     w = (2.0 * Ls + 1.0)
     return float(np.sum(w[valid] * r[valid]) / np.sum(w[valid]))
+
+
+def oracle_rerank(
+    fisher_results,
+    *,
+    X_input,
+    Y_input,
+    spectra,
+    phi_true_alm,
+    spec_for_A_L,
+    L_range,
+    output_key=+1,
+    progress: bool = False,
+):
+    """Rerank a list of Fisher-scored candidates via oracle cross-correlation.
+
+    Parameters
+    ----------
+    fisher_results : list of (fom, meta, expr, bundle)
+        Output of ``score_candidates(..., return_bundles=True)``.
+        Candidates whose bundle is ``None`` (Fisher-pass compile failure)
+        receive ``-inf`` oracle score.
+    X_input, Y_input : tuples from scalar_pair / pol_E_pair / ...
+        The input alm packages for each candidate's estimator call.
+        Same for every candidate — the search varies the symbolic
+        weight, not the input data.
+    spectra : dict[str, array]
+        Spectrum dict passed to each estimator callable (the ``spec``
+        dict convention used by ``compile_native``-returned callables).
+    phi_true_alm : 1D complex alm
+        Reference field to cross-correlate against.
+    spec_for_A_L : tuple of arrays
+        Positional spectra for A_L_fn (matches user_funcs ordering).
+    L_range : iterable of int
+        L modes for the ⟨r(L)⟩ sum.
+    output_key : int
+        Channel to pull out of the estimator's output dict.  +1 for
+        lensing-vector (phi), 0 for scalar (rotation α, source, etc.).
+
+    Returns
+    -------
+    list of (oracle_score, fisher_fom, meta, expr)
+        Sorted descending by oracle_score.
+    """
+    import healpy as hp
+    out = []
+    for i, (fisher_fom_val, meta, expr, bundle) in enumerate(fisher_results):
+        if progress and (i % 100 == 0):
+            print(f"  oracle {i}/{len(fisher_results)}...", flush=True)
+        try:
+            if bundle is None:
+                raise RuntimeError("bundle is None (Fisher-pass compile failed)")
+            est, A_L_fn, _ = bundle
+            psi = est(X_input, Y_input, spectra)
+            psi_alm = psi.get(output_key, None)
+            if psi_alm is None:
+                raise RuntimeError(f"estimator produced no output channel {output_key}")
+            A_L = A_L_fn(*spec_for_A_L)
+            phi_hat = hp.almxfl(np.asarray(psi_alm),
+                                np.where(np.isfinite(A_L), A_L, 0.0))
+            score = cross_correlation_score(phi_hat, phi_true_alm, L_range=L_range)
+        except Exception:
+            score = -np.inf
+        out.append((score, fisher_fom_val, meta, expr))
+    out.sort(key=lambda r: r[0], reverse=True)
+    return out

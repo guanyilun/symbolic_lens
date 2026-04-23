@@ -17,7 +17,7 @@ from symqe.engine.l12_sum import l1, l2
 from symqe.engine.namikawa import hCE, hCB, f_rot_EB
 from symqe.engine.estimator import compile_estimator
 from symqe.engine.estimator_backend import strip_gamma
-from symqe.engine.estimator_native import compile_rot_eb_native, Pixelization
+from symqe.engine.estimator_native import compile_rot_eb, Pixelization
 
 
 LMAX = 200
@@ -49,7 +49,7 @@ def main():
     g_rot_EB = f_rot_EB(px=-1) / (hCE(l1) * hCB(l2))
     terms = strip_gamma(compile_estimator(g_rot_EB))
     px_native = Pixelization(shape=shape, wcs=wcs)
-    emit = compile_rot_eb_native(terms, lmax=LMAX, px=px_native)
+    emit = compile_rot_eb(terms, lmax=LMAX, px=px_native)
     # Rotation reconstruction assumes primordial C_B = 0
     spectra = {"hCE": oclee, "hCB": oclbb, "CE": clee, "CB": np.zeros_like(clee)}
     alpha_native = emit(E_alm, B_alm, spectra)

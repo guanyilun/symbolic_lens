@@ -17,7 +17,7 @@ from symqe.engine.l12_sum import l1, l2
 from symqe.engine.namikawa import hCT, f_ampl_TT
 from symqe.engine.estimator import compile_estimator
 from symqe.engine.estimator_backend import strip_gamma
-from symqe.engine.estimator_native import compile_source_tt_native, Pixelization
+from symqe.engine.estimator_native import compile_source_tt, Pixelization
 
 
 LMAX = 200
@@ -40,7 +40,7 @@ def main():
 
     g = f_ampl_TT(px=+1) / (sympify(2) * hCT(l1) * hCT(l2))
     terms = strip_gamma(compile_estimator(g))
-    emit = compile_source_tt_native(terms, LMAX, px=px_nat)
+    emit = compile_source_tt(terms, LMAX, px=px_nat)
     print(f"Source compiled to {len(terms)} terms, pair_coeff = {emit.pair_coeff}")
 
     np.random.seed(42)

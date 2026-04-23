@@ -22,9 +22,9 @@ from symqe.engine.estimator import compile_estimator
 from symqe.engine.estimator_backend import strip_gamma
 from symqe.engine.estimator_native import (
     # hand-coded emitters (regression oracle)
-    compile_tt_native, compile_ee_native, compile_bb_native,
-    compile_tb_native, compile_eb_native, compile_te_native,
-    compile_rot_eb_native, compile_source_tt_native,
+    compile_tt, compile_ee, compile_bb,
+    compile_tb, compile_eb, compile_te,
+    compile_rot_eb, compile_source_tt,
     # generic emitter
     compile_native, scalar_pair, pol_E_pair, pol_B_pair,
     Pixelization,
@@ -72,7 +72,7 @@ def main():
     terms = strip_gamma(compile_estimator(g))
     spec = {"hCT": ocltt, "CT": cltt}
 
-    ref = compile_tt_native(terms, LMAX, px=px)(T, spec)
+    ref = compile_tt(terms, LMAX, px=px)(T, spec)
     gen = compile_native(terms, LMAX, px=px)(scalar_pair(T), scalar_pair(T), spec)
     # Generic output is a dict; for lensing TT phi is at +1 key
     compare(ref, gen[+1], "TT (phi)")
@@ -82,7 +82,7 @@ def main():
     terms = strip_gamma(compile_estimator(g))
     spec = {"hCE": oclee, "CE": clee}
 
-    ref = compile_ee_native(terms, LMAX, px=px)(E, spec)
+    ref = compile_ee(terms, LMAX, px=px)(E, spec)
     gen = compile_native(terms, LMAX, px=px)(pol_E_pair(E), pol_E_pair(E), spec)
     compare(ref, gen[+1], "EE (phi)")
 
@@ -91,7 +91,7 @@ def main():
     terms = strip_gamma(compile_estimator(g))
     spec = {"hCB": oclbb, "CB": clbb}
 
-    ref = compile_bb_native(terms, LMAX, px=px)(B, spec)
+    ref = compile_bb(terms, LMAX, px=px)(B, spec)
     gen = compile_native(terms, LMAX, px=px)(pol_B_pair(B), pol_B_pair(B), spec)
     compare(ref, gen[+1], "BB (phi)")
 
@@ -99,7 +99,7 @@ def main():
     g = f_TB(px=+1) / (hCT(l1) * hCB(l2))
     terms = strip_gamma(compile_estimator(g))
     spec = {"hCT": ocltt, "hCB": oclbb, "CTE": clte, "CT": cltt, "CB": clbb}
-    ref = compile_tb_native(terms, LMAX, px=px)(T, B, spec)
+    ref = compile_tb(terms, LMAX, px=px)(T, B, spec)
     gen = compile_native(terms, LMAX, px=px)(scalar_pair(T), pol_B_pair(B), spec)
     compare(ref, gen[+1], "TB (phi)")
 
@@ -107,7 +107,7 @@ def main():
     g = f_EB(px=+1) / (hCE(l1) * hCB(l2))
     terms = strip_gamma(compile_estimator(g))
     spec = {"hCE": oclee, "hCB": oclbb, "CE": clee, "CB": clbb}
-    ref = compile_eb_native(terms, LMAX, px=px)(E, B, spec)
+    ref = compile_eb(terms, LMAX, px=px)(E, B, spec)
     gen = compile_native(terms, LMAX, px=px)(pol_E_pair(E), pol_B_pair(B), spec)
     compare(ref, gen[+1], "EB (phi)")
 
@@ -115,7 +115,7 @@ def main():
     g = f_TE(px=+1) / (hCT(l1) * hCE(l2))
     terms = strip_gamma(compile_estimator(g))
     spec = {"hCT": ocltt, "hCE": oclee, "CTE": clte, "CT": cltt, "CE": clee}
-    ref = compile_te_native(terms, LMAX, px=px)(T, E, spec)
+    ref = compile_te(terms, LMAX, px=px)(T, E, spec)
     gen = compile_native(terms, LMAX, px=px)(scalar_pair(T), pol_E_pair(E), spec)
     compare(ref, gen[+1], "TE (phi)")
 
@@ -124,7 +124,7 @@ def main():
     terms = strip_gamma(compile_estimator(g))
     spec = {"hCE": oclee, "hCB": oclbb, "CE": clee, "CB": np.zeros_like(clee)}
 
-    ref = compile_rot_eb_native(terms, LMAX, px=px)(E, B, spec)
+    ref = compile_rot_eb(terms, LMAX, px=px)(E, B, spec)
     gen = compile_native(terms, LMAX, px=px)(pol_E_pair(E), pol_B_pair(B), spec)
     compare(ref, gen[0], "ROT-EB (α)")
 
@@ -133,7 +133,7 @@ def main():
     terms = strip_gamma(compile_estimator(g))
     spec = {"hCT": ocltt, "CT": cltt}
 
-    ref = compile_source_tt_native(terms, LMAX, px=px)(T, spec)
+    ref = compile_source_tt(terms, LMAX, px=px)(T, spec)
     gen = compile_native(terms, LMAX, px=px)(scalar_pair(T), scalar_pair(T), spec)
     compare(ref, gen[0], "SRC-TT")
 

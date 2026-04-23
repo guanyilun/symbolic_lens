@@ -703,127 +703,114 @@ def _alm_to_signed_pair(px, filtered_pair, spin_alm_in, abs_spin_out, lmax):
 
 
 # =====================================================================
-# Compile helpers — reuse the milestone-2 emitters but swap the falafel
-# primitives for the inlined equivalents above.  Every emitter accepts
-# either nside (HEALPix) or shape+wcs (CAR) or a pre-built px object.
+# Per-field convenience wrappers
 # =====================================================================
+#
+# Each of these wraps compile_native with a natural input signature
+# (e.g. ``compile_tt(terms, ...)(T_alm, spec)``) and applies a known
+# per-estimator scale factor on top of compile_native's output so it
+# matches the falafel / pytempura convention bit-for-bit.
+#
+# For 7 of the 8 estimators (TT/EE/BB/TB/TE/ROT-EB/SRC-TT) the only
+# difference between compile_native and the hand-coded falafel path is
+# a single constant: γ-residual × X↔Y symmetry × Δ.  The scale cancels
+# identically in any A_L-normalized estimate, so for search/ranking
+# prefer compile_qe (which carries the normalization) or compile_native
+# directly.  Use these wrappers when you need raw alms that cross-check
+# bit-for-bit against falafel/pytempura.
+#
+# EB is the exception: compile_native disagrees with the hand-coded
+# path by more than a scalar (Hu-Okamoto structural difference — see
+# memory 'generic_emitter_state.md'), so compile_eb keeps its own
+# hand-coded SHT recipe.
 
-def compile_tt_native(terms, lmax, *, nside=None, shape=None, wcs=None, px=None):
-    """Native TT emitter — same logic as estimator_backend.compile_tt but
-    without falafel at runtime."""
-    import healpy as hp
-    import math
+import math
 
-    xgrad_terms = [t for t in terms if t.spin_Y == 0 and abs(t.spin_X) == 1]
-    ref = xgrad_terms[0]
-    pair_coeff = 2 * complex(ref.coeff) * (-1) * 2 * math.sqrt(4 * math.pi)
+_SCALE_LENSING = 4 * math.sqrt(math.pi)   # TT, EE, BB, TB, TE
+_SCALE_ROT_EB  = 2 * math.sqrt(math.pi)   # rotation α (EB)
+_SCALE_SRC_TT  =     math.sqrt(math.pi)   # amplitude / source (TT)
 
-    px = _resolve_px(px, nside, shape, wcs)
 
+def compile_tt(terms, lmax, *, nside=None, shape=None, wcs=None, px=None):
+    """TT lensing estimator.  Returns ``compiled(T_alm, spectra) -> phi_alm``."""
+    emit = compile_native(terms, lmax, px=px, nside=nside, shape=shape, wcs=wcs)
     def compiled(T_alm, spectra):
-        T_alm = np.asarray(T_alm, dtype=np.complex128)
-        ell = np.arange(lmax + 1, dtype=float)
-        x_fl = _eval_atom(ref.X_filter, ell, spectra).real
-        y_fl = _eval_atom(ref.Y_filter, ell, spectra).real
-        L_fl = _eval_atom(ref.L_factor, ell, spectra).real
-
-        grad_l = np.sqrt(ell * (ell + 1))
-        grad_L = np.sqrt(ell * (ell + 1))
-        x_response_fl = np.where(grad_l > 0, x_fl / grad_l, 0.0)
-        L_residual_fl = np.where(grad_L > 0, L_fl / grad_L, 0.0)
-
-        X_resp = hp.almxfl(T_alm, x_response_fl)
-        Y_iv   = hp.almxfl(T_alm, y_fl)
-
-        phi_curl = qe_temperature_only(px, X_resp, Y_iv, lmax)
-        phi = phi_curl[0] if phi_curl.ndim == 2 else phi_curl
-        phi = hp.almxfl(phi, L_residual_fl)
-        return pair_coeff * phi
-
-    compiled.pair_coeff = pair_coeff
+        return _SCALE_LENSING * emit(scalar_pair(T_alm), scalar_pair(T_alm), spectra)[+1]
+    compiled.scale = _SCALE_LENSING
     return compiled
 
 
-def compile_pol_same_field_native(terms, lmax, field, *,
-                                  nside=None, shape=None, wcs=None, px=None):
-    """Native EE/BB emitter."""
-    import healpy as hp
-    import math
-    from .estimator_backend import _extract_pol_response
-    assert field in ('E', 'B')
-
-    X_resp, Y_resp, L_atom, coeff_ref = _extract_pol_response(terms, "X", "l1")
-    pair_coeff = 2 * complex(coeff_ref) * (-1) * 2 * math.sqrt(4*math.pi) * 2
-
-    px = _resolve_px(px, nside, shape, wcs)
-
-    def compiled(alm, spectra):
-        alm = np.asarray(alm, dtype=np.complex128)
-        ell = np.arange(lmax + 1, dtype=float)
-        x = _eval_atom(X_resp, ell, spectra).real
-        y = _eval_atom(Y_resp, ell, spectra).real
-        L = _eval_atom(L_atom, ell, spectra).real
-        grad_L = np.sqrt(ell * (ell + 1))
-        L_res = np.where(grad_L > 0, L / grad_L, 0.0)
-        X_resp_alm = hp.almxfl(alm, x)
-        Y_resp_alm = hp.almxfl(alm, y)
-        zero = np.zeros_like(alm)
-        if field == 'E':
-            phi_curl = qe_pol_only(px, X_resp_alm, zero, Y_resp_alm, zero, lmax)
-        else:
-            phi_curl = qe_pol_only(px, zero, X_resp_alm, zero, Y_resp_alm, lmax)
-        phi = phi_curl[0] if phi_curl.ndim == 2 else phi_curl
-        return pair_coeff * hp.almxfl(phi, L_res)
-
-    compiled.pair_coeff = pair_coeff
+def compile_ee(terms, lmax, *, nside=None, shape=None, wcs=None, px=None):
+    """EE lensing estimator.  Returns ``compiled(E_alm, spectra) -> phi_alm``."""
+    emit = compile_native(terms, lmax, px=px, nside=nside, shape=shape, wcs=wcs)
+    def compiled(E_alm, spectra):
+        return _SCALE_LENSING * emit(pol_E_pair(E_alm), pol_E_pair(E_alm), spectra)[+1]
+    compiled.scale = _SCALE_LENSING
     return compiled
 
 
-def compile_ee_native(terms, lmax, *, nside=None, shape=None, wcs=None, px=None):
-    return compile_pol_same_field_native(terms, lmax, 'E',
-                                         nside=nside, shape=shape, wcs=wcs, px=px)
+def compile_bb(terms, lmax, *, nside=None, shape=None, wcs=None, px=None):
+    """BB lensing estimator.  Returns ``compiled(B_alm, spectra) -> phi_alm``."""
+    emit = compile_native(terms, lmax, px=px, nside=nside, shape=shape, wcs=wcs)
+    def compiled(B_alm, spectra):
+        return _SCALE_LENSING * emit(pol_B_pair(B_alm), pol_B_pair(B_alm), spectra)[+1]
+    compiled.scale = _SCALE_LENSING
+    return compiled
 
 
-def compile_bb_native(terms, lmax, *, nside=None, shape=None, wcs=None, px=None):
-    return compile_pol_same_field_native(terms, lmax, 'B',
-                                         nside=nside, shape=shape, wcs=wcs, px=px)
-
-
-def compile_tb_native(terms, lmax, *, nside=None, shape=None, wcs=None, px=None):
-    """Native TB emitter. Mirrors estimator_backend.compile_tb."""
-    import healpy as hp
-    import math
-    from .estimator_backend import _extract_pol_response
-
-    X_resp, Y_resp, L_atom, coeff_ref = _extract_pol_response(terms, "X", "l1")
-    pair_coeff = complex(coeff_ref) * (-1) * 1 * math.sqrt(4*math.pi) * 2 * (-1j) * 2
-
-    px = _resolve_px(px, nside, shape, wcs)
-
+def compile_tb(terms, lmax, *, nside=None, shape=None, wcs=None, px=None):
+    """TB lensing estimator.  Returns ``compiled(T_alm, B_alm, spectra) -> phi_alm``."""
+    emit = compile_native(terms, lmax, px=px, nside=nside, shape=shape, wcs=wcs)
     def compiled(T_alm, B_alm, spectra):
-        T_alm = np.asarray(T_alm, dtype=np.complex128)
-        B_alm = np.asarray(B_alm, dtype=np.complex128)
-        ell = np.arange(lmax + 1, dtype=float)
-        x = _eval_atom(X_resp, ell, spectra).real
-        y = _eval_atom(Y_resp, ell, spectra).real
-        L = _eval_atom(L_atom, ell, spectra).real
-        grad_L = np.sqrt(ell * (ell + 1))
-        L_res = np.where(grad_L > 0, L / grad_L, 0.0)
-        X_E = hp.almxfl(T_alm, x)
-        Y_B = hp.almxfl(B_alm, y)
-        zero = np.zeros_like(T_alm)
-        phi_curl = qe_pol_only(px, X_E, zero, zero, Y_B, lmax)
-        phi = phi_curl[0] if phi_curl.ndim == 2 else phi_curl
-        return pair_coeff * hp.almxfl(phi, L_res)
-
-    compiled.pair_coeff = pair_coeff
+        return _SCALE_LENSING * emit(scalar_pair(T_alm), pol_B_pair(B_alm), spectra)[+1]
+    compiled.scale = _SCALE_LENSING
     return compiled
 
 
-def compile_eb_native(terms, lmax, *, nside=None, shape=None, wcs=None, px=None):
-    """Native EB emitter. Mirrors estimator_backend.compile_eb."""
+def compile_te(terms, lmax, *, nside=None, shape=None, wcs=None, px=None):
+    """TE lensing estimator.  Returns ``compiled(T_alm, E_alm, spectra) -> phi_alm``."""
+    emit = compile_native(terms, lmax, px=px, nside=nside, shape=shape, wcs=wcs)
+    def compiled(T_alm, E_alm, spectra):
+        return _SCALE_LENSING * emit(scalar_pair(T_alm), pol_E_pair(E_alm), spectra)[+1]
+    compiled.scale = _SCALE_LENSING
+    return compiled
+
+
+def compile_rot_eb(terms, lmax, *, nside=None, shape=None, wcs=None, px=None):
+    """Rotation (α) EB estimator.  Returns ``compiled(E_alm, B_alm, spectra) -> alpha_alm``."""
+    emit = compile_native(terms, lmax, px=px, nside=nside, shape=shape, wcs=wcs)
+    def compiled(E_alm, B_alm, spectra):
+        return _SCALE_ROT_EB * emit(pol_E_pair(E_alm), pol_B_pair(B_alm), spectra)[0]
+    compiled.scale = _SCALE_ROT_EB
+    return compiled
+
+
+def compile_source_tt(terms, lmax, *, nside=None, shape=None, wcs=None, px=None):
+    """Source / amplitude TT estimator.  Returns ``compiled(T_alm, spectra) -> src_alm``.
+
+    The Namikawa-style ε estimator — spin-0 output, no sqrt(L(L+1))
+    post-multiplier.  Compared against ``falafel.qe.qe_source`` modulo
+    an inverse-variance filter convention (see test_source_vs_falafel.py).
+    """
+    emit = compile_native(terms, lmax, px=px, nside=nside, shape=shape, wcs=wcs)
+    def compiled(T_alm, spectra):
+        return _SCALE_SRC_TT * emit(scalar_pair(T_alm), scalar_pair(T_alm), spectra)[0]
+    compiled.scale = _SCALE_SRC_TT
+    return compiled
+
+
+# --- EB: kept as hand-coded SHT (compile_native structurally diverges) ---
+
+def compile_eb(terms, lmax, *, nside=None, shape=None, wcs=None, px=None):
+    """EB lensing estimator.  Returns ``compiled(E_alm, B_alm, spectra) -> phi_alm``.
+
+    Kept as a dedicated hand-coded SHT recipe because the generic
+    ``compile_native`` disagrees with falafel by more than a constant
+    here (Hu-Okamoto structural difference — see memory
+    'generic_emitter_state.md').  Until that gap is closed in
+    compile_native, this is the bit-for-bit EB path.
+    """
     import healpy as hp
-    import math
     from .estimator_backend import _extract_pol_response_from
 
     xgrad = [t for t in terms if abs(t.spin_X) in (1, 3) and abs(t.spin_Y) == 2]
@@ -852,198 +839,4 @@ def compile_eb_native(terms, lmax, *, nside=None, shape=None, wcs=None, px=None)
         return pair_coeff * hp.almxfl(phi, L_res)
 
     compiled.pair_coeff = pair_coeff
-    return compiled
-
-
-def compile_source_tt_native(terms, lmax, *, nside=None, shape=None, wcs=None, px=None):
-    """Amplitude / source TT estimator (spin-0 output, no gradient filters).
-
-    Structurally simpler than lensing TT:
-      - spin-0 alm2map on both legs
-      - spin-0 map2alm_spin on the scalar output
-      - no sqrt(L(L+1)) post-multiplier
-
-    This is the Namikawa-style 'ε' estimator.  For a comparison against
-    ``falafel.qe.qe_source``, see test_source_vs_falafel.py — falafel's
-    default qe_source uses a different convention (no C_T response
-    weighting), so the two match only up to a trivial filter adjustment.
-    """
-    import healpy as hp
-    import math
-
-    px = _resolve_px(px, nside, shape, wcs)
-
-    # Source TT pair_coeff bookkeeping:
-    #   × coeff_ref   atomic coefficient = 1/(4√π)
-    #   × sqrt(4π)    γ residual
-    # NO extra X↔Y factor: spin-0 × spin-0 pixel multiplication is
-    #   commutative, so the two plans (X-response × Y-iv and its swap)
-    #   correspond to the SAME real-space product — falafel's qe_source
-    #   computes this product once.
-    # NO extra Δ factor: falafel's qe_source applies its own 0.5 at the
-    #   end (``salm = 0.5*res[0]``), which is exactly the 1/Δ scaling.
-    # Net:  coeff_ref · sqrt(4π)  =  (1/(4√π)) · 2√π  =  0.5.
-    ref = terms[0]
-    pair_coeff = complex(ref.coeff) * math.sqrt(4 * math.pi)
-
-    def compiled(T_alm, spectra):
-        T_alm = np.asarray(T_alm, dtype=np.complex128)
-        ell = np.arange(lmax + 1, dtype=float)
-        x_fl = _eval_atom(ref.X_filter, ell, spectra).real.astype(np.float64)
-        y_fl = _eval_atom(ref.Y_filter, ell, spectra).real.astype(np.float64)
-
-        X = hp.almxfl(T_alm, x_fl)      # response-weighted
-        Y = hp.almxfl(T_alm, y_fl)      # inverse-variance
-
-        Xmap = px.alm2map(X, spin=0, ncomp=1, mlmax=lmax)[0]
-        Ymap = px.alm2map(Y, spin=0, ncomp=1, mlmax=lmax)[0]
-
-        prod = Xmap * Ymap
-        if not px.hpix:
-            from pixell import enmap
-            prod = enmap.enmap(prod, px.wcs)
-
-        src_alm = px.map2alm_spin(prod, lmax, 0, 0)
-        # map2alm_spin with spin_alm=0, spin_transform=0 returns a
-        # pair (a+, a-).  For the scalar (spin-0) output we take res[0].
-        src_alm = np.asarray(src_alm)
-        src_alm = src_alm[0] if src_alm.ndim == 2 else src_alm
-        return pair_coeff * src_alm
-
-    compiled.pair_coeff = pair_coeff
-    return compiled
-
-
-def compile_rot_eb_native(terms, lmax, nside=None, shape=None, wcs=None, px=None):
-    """Native backend for the CMB rotation (α) EB estimator.
-
-    Pass either ``nside`` (HEALPix) or ``shape`` + ``wcs`` (CAR), or a
-    pre-built ``px`` object.  CAR is the canonical SO/ACT pipeline
-    geometry and is recommended for production.
-
-    Structurally different from lensing EB:
-      - spin-2 SHT on both E and B legs (no gradient/sqrt filters)
-      - scalar (spin-0) map2alm for the output α_LM
-      - no sqrt(L(L+1)) post-multiplier (L_factor = 1 in the recipe)
-
-    This primitive is NOT present in falafel.qe as a single function,
-    though falafel.qe.qe_rot provides an equivalent CAR-only implementation
-    we validate against.  The emitter assembles the primitive from the
-    symbolic recipe (spin tuples, filters, coefficients); the underlying
-    W^{α,+} weight is defined in namikawa.py.
-    """
-    import healpy as hp
-    if px is None:
-        if nside is not None:
-            px = _resolve_px(px, nside, shape, wcs)
-        else:
-            px = Pixelization(shape=shape, wcs=wcs)
-
-    def compiled(E_alm, B_alm, spectra):
-        E_alm = np.asarray(E_alm, dtype=np.complex128)
-        B_alm = np.asarray(B_alm, dtype=np.complex128)
-        ell = np.arange(lmax + 1, dtype=float)
-
-        # Accumulate the coefficient-weighted complex map in real space.  We
-        # can't take Re(prod) per term because the ±spin pair members have
-        # conjugate prod's with identical real parts — only their imaginary
-        # parts carry the signal that the ±I rotation coefficients extract.
-        total_map = None
-        for t in terms:
-            x_fl = _eval_atom(t.X_filter, ell, spectra).real.astype(np.float64)
-            y_fl = _eval_atom(t.Y_filter, ell, spectra).real.astype(np.float64)
-
-            Ef = hp.almxfl(E_alm, x_fl)
-            Bf = hp.almxfl(B_alm, y_fl)
-
-            palms_E = np.stack([Ef, Ef])
-            xmap_pair = px.alm2map_spin(palms_E, spin_alm=2, spin_transform=2,
-                                        ncomp=2, mlmax=lmax)
-            x_map = xmap_pair[0] if t.spin_X > 0 else xmap_pair[1]
-
-            palms_B = np.stack([1j * Bf, -1j * Bf])
-            ymap_pair = px.alm2map_spin(palms_B, spin_alm=2, spin_transform=2,
-                                        ncomp=2, mlmax=lmax)
-            y_map = ymap_pair[0] if t.spin_Y > 0 else ymap_pair[1]
-
-            prod = x_map * y_map
-            contrib = complex(t.coeff) * prod
-            total_map = contrib if total_map is None else total_map + contrib
-
-        # α is a real scalar field — take the real part of the summed map
-        # and apply the (constant) L_factor once.
-        L_fl = _eval_atom(terms[0].L_factor, ell, spectra).real.astype(np.float64)
-        alpha_map = total_map.real
-        if px.hpix:
-            alpha_alm = px.map2alm(np.asarray(alpha_map, dtype=np.float64), lmax=lmax)
-        else:
-            from pixell import enmap
-            alpha_alm = px.map2alm(enmap.enmap(alpha_map, px.wcs), lmax=lmax)
-        alpha_alm = hp.almxfl(alpha_alm, L_fl)
-        # Undo the γ residual 1/sqrt(4π) that our symbolic f/g carries
-        # explicitly; falafel.qe.qe_rot does not include this factor.
-        import math
-        return alpha_alm * math.sqrt(4 * math.pi)
-
-    compiled.n_terms = len(terms)
-    return compiled
-
-
-def compile_te_native(terms, lmax, *, nside=None, shape=None, wcs=None, px=None):
-    """Native TE emitter. Mirrors estimator_backend.compile_te (pol half
-    + temp half summed)."""
-    import healpy as hp
-    import math
-    from .estimator_backend import _extract_pol_response_from, _strip_sqrt_l_l_plus_1
-
-    pol_terms  = [t for t in terms if abs(t.spin_X) in (1, 3) and abs(t.spin_Y) == 2]
-    temp_terms = [t for t in terms if t.spin_X == 0 and abs(t.spin_Y) == 1]
-
-    pol_ref = next(t for t in pol_terms if abs(t.spin_X) == 1)
-    pol_X_resp = _extract_pol_response_from(pol_ref, "X")
-    pol_Y_resp = pol_ref.Y_filter
-    pol_L_atom = pol_ref.L_factor
-    pol_pair_coeff = complex(pol_ref.coeff) * (-1) * 1 * math.sqrt(4*math.pi) * 2 * 2
-
-    temp_ref = next(t for t in temp_terms if abs(t.spin_Y) == 1)
-    temp_Y_response = _strip_sqrt_l_l_plus_1(temp_ref.Y_filter, "l2")
-    temp_X_iv       = temp_ref.X_filter
-    temp_L_atom     = temp_ref.L_factor
-    temp_pair_coeff = complex(temp_ref.coeff) * (-1) * 1 * math.sqrt(4*math.pi) * 2
-
-    px = _resolve_px(px, nside, shape, wcs)
-
-    def compiled(T_alm, E_alm, spectra):
-        T_alm = np.asarray(T_alm, dtype=np.complex128)
-        E_alm = np.asarray(E_alm, dtype=np.complex128)
-        ell = np.arange(lmax + 1, dtype=float)
-        grad_L = np.sqrt(ell * (ell + 1))
-
-        # pol half
-        p_x = _eval_atom(pol_X_resp, ell, spectra).real
-        p_y = _eval_atom(pol_Y_resp, ell, spectra).real
-        p_L = _eval_atom(pol_L_atom, ell, spectra).real
-        p_L_res = np.where(grad_L > 0, p_L / grad_L, 0.0)
-        X_E = hp.almxfl(T_alm, p_x)
-        Y_E = hp.almxfl(E_alm, p_y)
-        zero = np.zeros_like(T_alm)
-        pol_pc = qe_pol_only(px, X_E, zero, Y_E, zero, lmax)
-        pol_phi = (pol_pc[0] if pol_pc.ndim == 2 else pol_pc)
-        pol_phi = hp.almxfl(pol_phi, p_L_res) * pol_pair_coeff
-
-        # temp half
-        t_Y_resp = _eval_atom(temp_Y_response, ell, spectra).real
-        t_X_iv   = _eval_atom(temp_X_iv, ell, spectra).real
-        t_L      = _eval_atom(temp_L_atom, ell, spectra).real
-        t_L_res  = np.where(grad_L > 0, t_L / grad_L, 0.0)
-        E_as_X = hp.almxfl(E_alm, t_Y_resp)
-        T_as_Y = hp.almxfl(T_alm, t_X_iv)
-        temp_pc = qe_temperature_only(px, E_as_X, T_as_Y, lmax)
-        temp_phi = (temp_pc[0] if temp_pc.ndim == 2 else temp_pc)
-        temp_phi = hp.almxfl(temp_phi, t_L_res) * temp_pair_coeff
-
-        return pol_phi + temp_phi
-
-    compiled.pol_pair_coeff = pol_pair_coeff
-    compiled.temp_pair_coeff = temp_pair_coeff
     return compiled

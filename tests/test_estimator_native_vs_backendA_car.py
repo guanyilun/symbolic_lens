@@ -22,8 +22,8 @@ from symqe.engine.estimator import compile_estimator
 from symqe.engine.estimator_backend import strip_gamma
 from symqe.engine.estimator_native import (
     Pixelization,
-    compile_tt_native, compile_ee_native, compile_bb_native,
-    compile_tb_native, compile_eb_native, compile_te_native,
+    compile_tt, compile_ee, compile_bb,
+    compile_tb, compile_eb, compile_te,
 )
 
 LMAX = 200
@@ -104,7 +104,7 @@ def main():
     phi_curl = qe_temperature_only(px_fal, X_resp, Y_iv, LMAX)
     phi_fal = phi_curl[0] if phi_curl.ndim == 2 else phi_curl
     phi_fal = pair_coeff * phi_fal
-    phi_nat = compile_tt_native(terms, LMAX, shape=shape, wcs=wcs)(
+    phi_nat = compile_tt(terms, LMAX, shape=shape, wcs=wcs)(
                 T, {"hCT": ocltt, "CT": cltt})
     compare(phi_fal, phi_nat, "TT")
 
@@ -121,7 +121,7 @@ def main():
     phi_curl = qe_pol_only(px_fal, X_fal, zero, Y_fal, zero, LMAX)
     phi_fal = phi_curl[0] if phi_curl.ndim == 2 else phi_curl
     phi_fal = pair_coeff_EE * phi_fal
-    phi_nat = compile_ee_native(terms, LMAX, shape=shape, wcs=wcs)(
+    phi_nat = compile_ee(terms, LMAX, shape=shape, wcs=wcs)(
                 E, {"hCE": oclee, "CE": clee})
     compare(phi_fal, phi_nat, "EE")
 
@@ -135,7 +135,7 @@ def main():
     phi_curl = qe_pol_only(px_fal, zero, X_fal, zero, Y_fal, LMAX)
     phi_fal = phi_curl[0] if phi_curl.ndim == 2 else phi_curl
     phi_fal = pair_coeff_BB * phi_fal
-    phi_nat = compile_bb_native(terms, LMAX, shape=shape, wcs=wcs)(
+    phi_nat = compile_bb(terms, LMAX, shape=shape, wcs=wcs)(
                 B, {"hCB": oclbb, "CB": clbb})
     compare(phi_fal, phi_nat, "BB")
 
@@ -150,7 +150,7 @@ def main():
     phi_curl = qe_pol_only(px_fal, X_pseudo_E, zero, zero, fB, LMAX)
     phi_fal = phi_curl[0] if phi_curl.ndim == 2 else phi_curl
     phi_fal = pair_coeff_TB * phi_fal
-    phi_nat = compile_tb_native(terms, LMAX, shape=shape, wcs=wcs)(
+    phi_nat = compile_tb(terms, LMAX, shape=shape, wcs=wcs)(
                 T, B, {"hCT": ocltt, "hCB": oclbb, "CTE": clte})
     compare(phi_fal, phi_nat, "TB")
 
@@ -167,7 +167,7 @@ def main():
     phi_curl = qe_pol_only(px_fal, X_E, zero, zero, Y_B, LMAX)
     phi_fal = phi_curl[0] if phi_curl.ndim == 2 else phi_curl
     phi_fal = pair_coeff_EB * phi_fal
-    phi_nat = compile_eb_native(terms, LMAX, shape=shape, wcs=wcs)(
+    phi_nat = compile_eb(terms, LMAX, shape=shape, wcs=wcs)(
                 E, B, {"hCE": oclee, "hCB": oclbb, "CE": clee, "CB": np.zeros_like(clee)})
     compare(phi_fal, phi_nat, "EB")
 
@@ -192,7 +192,7 @@ def main():
     phi_fal_T = deflection_map_to_phi_curl_alms(px_fal, dmap_T, LMAX)[0] * temp_pair_coeff
     phi_fal_P = deflection_map_to_phi_curl_alms(px_fal, dmap_P, LMAX)[0] * pol_pair_coeff
     phi_fal = phi_fal_T + phi_fal_P
-    phi_nat = compile_te_native(terms, LMAX, shape=shape, wcs=wcs)(
+    phi_nat = compile_te(terms, LMAX, shape=shape, wcs=wcs)(
                 T, E, {"hCT": ocltt, "hCE": oclee, "CTE": clte})
     compare(phi_fal, phi_nat, "TE")
 

@@ -18,8 +18,8 @@ from symqe.engine.estimator import compile_estimator
 from symqe.engine.estimator_backend import strip_gamma
 from symqe.engine.estimator_native import (
     Pixelization, compile_native, scalar_pair, pol_E_pair, pol_B_pair,
-    compile_ee_native, compile_bb_native, compile_tb_native,
-    compile_eb_native, compile_te_native,
+    compile_ee, compile_bb, compile_tb,
+    compile_eb, compile_te,
 )
 
 LMAX, NSIDE = 200, 256
@@ -365,12 +365,12 @@ def run_one(name, f_fn, hcfn_args, in_x, in_y, hc_native_fn):
 
 
 run_one("EE", (f_EE() / (hCE(l1) * hCE(l2)),),
-        (E, spec), pol_E_pair(E), pol_E_pair(E), compile_ee_native)
+        (E, spec), pol_E_pair(E), pol_E_pair(E), compile_ee)
 run_one("BB", (f_BB() / (hCB(l1) * hCB(l2)),),
-        (B, spec), pol_B_pair(B), pol_B_pair(B), compile_bb_native)
+        (B, spec), pol_B_pair(B), pol_B_pair(B), compile_bb)
 run_one("TB", (f_TB() / (hCT(l1) * hCB(l2)),),
-        (T, B, spec), scalar_pair(T), pol_B_pair(B), compile_tb_native)
+        (T, B, spec), scalar_pair(T), pol_B_pair(B), compile_tb)
 run_one("TE", (f_TE() / (hCT(l1) * hCE(l2)),),
-        (T, E, spec), scalar_pair(T), pol_E_pair(E), compile_te_native)
+        (T, E, spec), scalar_pair(T), pol_E_pair(E), compile_te)
 run_one("EB", (f_EB() / (hCE(l1) * hCB(l2)),),
-        (E, B, spec), pol_E_pair(E), pol_B_pair(B), compile_eb_native)
+        (E, B, spec), pol_E_pair(E), pol_B_pair(B), compile_eb)

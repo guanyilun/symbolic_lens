@@ -59,6 +59,9 @@ from .engine.compile_qe import compile_qe
 from .engine.estimator_native import (
     build_estimator,
     compile_native,        # low-level: raw (alm_pair, spin_alm) interface
+    # Per-field convenience wrappers (bit-for-bit with falafel/pytempura).
+    compile_tt, compile_ee, compile_bb, compile_tb, compile_eb, compile_te,
+    compile_rot_eb, compile_source_tt,
     Pixelization,
     scalar_pair, pol_E_pair, pol_B_pair, pol_EB_pair,
 )
@@ -80,9 +83,13 @@ __all__ = [
     # f builders
     "f_TT", "f_TE", "f_TB", "f_EE", "f_EB", "f_BB",
     "f_rot_EB", "f_rot_EE", "f_rot_TB", "f_ampl_TT",
-    # compile
+    # compile (high-level + low-level)
     "compile_estimator", "compile_norm", "compile_qe",
     "build_estimator", "compile_native",
+    # per-field convenience (bit-for-bit with falafel/pytempura)
+    "compile_tt", "compile_ee", "compile_bb",
+    "compile_tb", "compile_eb", "compile_te",
+    "compile_rot_eb", "compile_source_tt",
     # types
     "EstimatorTerm", "Pixelization", "NormCompiler",
     # input packing

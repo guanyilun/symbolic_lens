@@ -21,7 +21,7 @@ from symqe.engine.l12_sum import l1, l2
 from symqe.engine.namikawa import hCE, hCB, f_rot_EB
 from symqe.engine.estimator import compile_estimator
 from symqe.engine.estimator_backend import strip_gamma
-from symqe.engine.estimator_native import compile_rot_eb_native
+from symqe.engine.estimator_native import compile_rot_eb
 
 
 LMAX, NSIDE = 200, 256
@@ -42,7 +42,7 @@ def main():
     terms = strip_gamma(compile_estimator(g_rot_EB))
     print(f"Rotation EB compiled to {len(terms)} γ-stripped atomic terms.")
 
-    emit = compile_rot_eb_native(terms, lmax=LMAX, nside=NSIDE)
+    emit = compile_rot_eb(terms, lmax=LMAX, nside=NSIDE)
 
     np.random.seed(42)
     E_alm = hp.synalm(oclee, lmax=LMAX, new=True)

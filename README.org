@@ -938,6 +938,53 @@ filters, L-factor, and a =coeffs= dict mapping
    (=fl = np.zeros_like(ells, dtype=float)=), this rule should be
    removed and both backends will agree at full precision.
 
+*Quantifying the upstream falafel int-truncation bug.*  The bug
+silently truncates the spin-±2 ladder factor to its integer floor:
+$\sqrt{(\ell-2)(\ell+3)} \to \lfloor\sqrt{(\ell-2)(\ell+3)}\rfloor$
+(and analogously for the lowering ladder).  Asymptotically the
+truncation loses at most ~0.5 out of ~ℓ, so the relative error scales
+as $1/(2\ell)$.  Per-ℓ ratios (computed by
+=probe_int_trunc_error_summary.py=):
+
+| ℓ    | raising error | lowering error |
+|------+---------------+----------------|
+|    3 | 18.35%        | 5.13%          |
+|    5 | 18.35%        | 5.51%          |
+|   10 | 1.94%         | 3.78%          |
+|   30 | 1.31%         | 1.52%          |
+|  100 | 0.467%        | 0.486%         |
+|  300 | 0.163%        | 0.165%         |
+| 1000 | 0.0497%       | 0.0499%        |
+| 3000 | 0.0166%       | 0.0167%        |
+
+Signal-weighted RMS (weights = $(2\ell+1)\cdot C_\ell^{EE}$) on the
+filtered alm that goes into the pixel product:
+
+| ℓmax | raising leg (|s|=3) | lowering leg (|s|=1) |
+|------+----------------------+----------------------|
+|  200 | 3.18%                | 1.76%                |
+| 3000 | 0.479%               | 0.267%               |
+
+The ladder factor multiplies the input alm once per gradient leg.
+Output $\hat\phi_{LM}$ scatter scales linearly with this; reconstruction-
+noise-bias on $N_L^\phi$ is roughly twice the alm scatter
+(since $N_L \propto |\hat\phi_{LM}|^2$).  At realistic
+$\ell_{\max} = 3000$:
+
+- $\hat\phi_{LM}$ scatter: *~0.3-0.5%* on the gradient leg.
+- $N_L^\phi$ bias: *~0.6-1.0%*.
+
+For SPT/ACT-era analyses (few-percent precision on $N_L^\phi$): just
+barely in the noise — explains why the bug went unnoticed for so long.
+For CMB-S4 / LiteBIRD (sub-percent lensing science): a real
+systematic.  Most exposed are *low-L reconstructions* ($L_{\rm out} =
+2\dots50$), where the Wigner-3j coupling integrates over low input ℓ
+that carry 5-20% per-mode error.  The signal-weighted dilution helps
+but does not eliminate the bias.
+
+The fix is one line in =falafel/qe.py=:
+=fl = np.zeros_like(ells, dtype=float)= in place of =fl = ells * 0=.
+
 *W^+ vs W^- detection.*  W^+ plans have REAL coefficients ($\zeta^+ = 1$);
 W^- plans have IMAGINARY coefficients ($\zeta^- = i$):
 
@@ -991,6 +1038,9 @@ everything else.
 - =probe_int_trunc.py= — monkey-patched =compile_native= demonstrating
   the int-truncation rule alone brings EE/BB/TB/TE from std/mean
   ~5e-3 down to ~1e-15.
+- =probe_int_trunc_error_summary.py= — quantifies the upstream falafel
+  int-truncation error per-ℓ and signal-weighted up to ℓmax = 3000;
+  the source of the impact tables documented above.
 - =probe_te_halves.py= — TE pol-half vs temp-half breakdown that led
   to rule 5.
 - =probe_eb_per_half.py= — EB structural breakdown showing the

@@ -1299,6 +1299,10 @@ discovery objective) are listed under [[Future Work]] below.
 - =scripts/demos/demo_search_harness.py= — same lensing-TT case run
   through the generic =sq.run_search= harness, with multi-seed
   averaging support (see [[Milestone 7]]).
+- =scripts/demos/demo_search_rotation.py= — rotation-EB case (second
+  case landed — see [[Milestone 7]]).  Validated that the pipeline
+  handles W^- / imaginary-coefficient weights after a targeted
+  ``g·conj(f)`` fix in compile_qe_from_f.
 
 ** Milestone 6 — grammar enumeration + two-pass search ✅
 
@@ -1419,6 +1423,37 @@ is the next step.
 Regression under the new harness reproduces the milestone-6 ranks
 bit-for-bit: f_TT correct at 8/1001, wrong ladder 6/1001, wrong
 m-row 1001/1001 — pure refactor.
+
+*Second case landed: rotation-EB.*  =scripts/demos/demo_search_rotation.py=
+configures a birefringence search (primordial $C_{BB} = 0$, random
+$\alpha(\hat n)$ rotating Q ± iU in pixel space, E/B observed).
+Tight grammar: 939 candidates with spectra $\{C_E, C_B\}$, no
+ladders, $\{\pm 1, \pm i\}$ coefficients, parity factors
+$(1, P, 1+P, 1-P)$, $m_L = 0$.  Results (lmax=100, nside=64, 1 seed):
+
+| Reference                 | Oracle rank | ⟨r(L)⟩  |
+|---------------------------+-------------+---------|
+| $f^{\alpha, EB}$ Namikawa |   4 / 939   | +0.40   |
+| Namikawa half ($W \cdot C_E$ swap) | 142 / 939 | −0.40 |
+| Namikawa half ($W \cdot C_B$)      | 939 / 939 | $-\infty$ |
+
+Correct weight at top 0.4%.  The $W \cdot C_E$ half lands with
+*negative* cross-correlation because the full Namikawa weight is an
+antisymmetric sum $W \cdot C_B - W^{\rm swap} \cdot C_E$ — the
+single-atom half has the opposite sign.  The $W \cdot C_B$ half
+correctly collapses to ``−∞`` ($C_{BB} = 0$ primordial means no
+response).
+
+*Latent bug surfaced during rotation work.*  ``compile_qe_from_f``
+originally built the $A_L^{-1}$ integrand as $g \cdot f$, which for
+real-coefficient weights equals $g^2 \cdot \Delta \cdot \hat C \hat C$
+(correct) but for complex-coefficient weights (W^-, rotation, any
+ζ^- = i) yields a NEGATIVE integrand that the ``np.where(inv>0, ...)``
+branch silently mapped to ``inf``.  Every W^- reference scored
+``-∞`` on Fisher before the fix.  Now uses $g \cdot \bar f$ via a
+targeted ``I → -I`` substitution (sympy's ``conjugate()`` leaves an
+opaque wrapper the atomic-tree bridge can't lower).  Transparent
+for real-f cases (TT references keep Fisher FOMs bit-identical).
 
 * Future Work
 

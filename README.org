@@ -18,64 +18,70 @@ over two ells) to a compiled numerical kernel automatically.
 
 * Setup
 
-On Compute Canada clusters:
+The project is pip-installable:
 
 #+begin_src shell :results output
-module load scipy-stack
-pip install --user jax
+pip install -e .                  # core
+pip install -e .[dev,validation]  # + pytest + pytempura
 #+end_src
 
-Dependencies:
-- =sympy= (via =scipy-stack= module)
-- =jax= (CPU-only is sufficient)
-- =numpy= / =scipy= (via =scipy-stack=)
-- =pytempura= (optional, for validation against reference implementation)
+On Compute Canada clusters (no pip in the base env), set =PYTHONPATH= instead:
+
+#+begin_src shell :results output
+module load python/3.11 scipy-stack/2025a
+export PYTHONPATH=$PWD/src:$PYTHONPATH
+#+end_src
+
+Dependencies (declared in =pyproject.toml=): =numpy=, =scipy=, =sympy=,
+=healpy=, =pixell=.  Validation extras: =pytempura=, =falafel=
+(for bit-for-bit regression against the falafel QE pipeline).
 
 * Project Structure
 
 #+begin_example
 symbolic_lens/
+├── pyproject.toml          # pip install -e .
 ├── README.org              # this file
-├── requirements.txt        # pytempura, pixell
 │
-│ # Numerical foundation
-├── fastgl.py               # Fast Gauss-Legendre quadrature (Bogaert algorithm)
-├── wignerd.py              # Wigner-d functions via JAX (3-term recurrence)
-├── glquad.py               # Wrapper combining FastGL + Wigner-d transforms
+├── src/symqe/              # library core (the installable package)
+│   ├── engine/             # symbolic compiler (5-layer atomic-tree engine)
+│   │   ├── atom.py             # Layer 1: AtomicFactor tree (domain-agnostic)
+│   │   ├── sympy_bridge.py     # Layer 2: sympy → atom conversion
+│   │   ├── normal_form.py      # Layer 3: flatten to sum-of-products
+│   │   ├── quotient.py         # Layer 4: reduce mod polynomial relations (P²=1)
+│   │   ├── l12_sum.py          # Layer 5a: kernel normalization (W² → GL quad)
+│   │   ├── estimator.py        # Layer 5b: estimator compiler (W → SHT recipe)
+│   │   ├── estimator_backend.py# falafel-delegating emitter (backend A)
+│   │   ├── estimator_native.py # native SHT emitter + generic compile_native
+│   │   ├── compile_qe.py       # unified compile: estimator + A_L + N_L^phi
+│   │   └── namikawa.py         # shared W^{x,0/±} and f^{XY} definitions
+│   └── reference/          # hand-coded reference implementations
+│       ├── norm_lens.py        # lensing normalization kernels (pytempura-validated)
+│       ├── glquad.py           # GL-quadrature wrapper
+│       ├── fastgl.py           # FastGL nodes (Bogaert algorithm)
+│       ├── wignerd.py          # Wigner-d via JAX 3-term recurrence
+│       └── utils.py            # CMB theory spectra helper
 │
-│ # Physics
-├── norm_lens.py            # Hand-coded lensing normalization kernels
-├── utils.py                # CMB theory spectra helper
-├── comp_tempura.py         # Validation against pytempura
-│
-│ # Symbolic engine (5-layer atomic-tree engine; see "Symbolic Engine" below)
-├── sym_utils/
-│   ├── atom.py             # Layer 1: AtomicFactor tree (domain-agnostic)
-│   ├── sympy_bridge.py     # Layer 2: sympy → atom conversion
-│   ├── normal_form.py      # Layer 3: flatten to sum-of-products FlatTerm list
-│   ├── quotient.py         # Layer 4: reduce mod polynomial relations (e.g. P²=1)
-│   ├── l12_sum.py          # Layer 5a: kernel normalization compiler (W² → GL quadrature)
-│   ├── estimator.py        # Layer 5b: estimator compiler (single W → SHT recipe)
-│   ├── estimator_backend.py # Falafel-delegating emitter (backend A)
-│   ├── estimator_native.py # Native SHT emitter + generic compile_native
-│   ├── compile_qe.py       # Unified compile: estimator + A_L + N_L^phi
-│   └── namikawa.py         # Shared W^{x,0/±} and f^{XY} symbolic definitions
-│
-│ # Tests
-├── test_norm_sym.py        # Symbolic compiler test for all 8 basis kernels
-└── wignerd_comparison.jl   # Cross-validation with Julia
+├── tests/                  # pytest regressions vs falafel / pytempura
+├── scripts/
+│   ├── demos/              # demo_rotation_estimator, demo_search_*
+│   └── analysis/           # check_full_norm, comp_sym_vs_hand, comp_tempura,
+│                           # probe_int_trunc[_error_summary], probe_qe_shear_final
+├── archive/probes/         # one-shot debug scripts from prior investigations
+├── extras/wignerd_comparison.jl
+└── figures/                # generated plots
 #+end_example
 
 * Numerical Layer
 
-** Fast Gauss-Legendre Quadrature (=fastgl.py=)
+** Fast Gauss-Legendre Quadrature (=src/symqe/reference/fastgl.py=)
 
 Computes GL quadrature nodes and weights using the Bogaert algorithm, which
 evaluates Bessel zeros and Chebyshev interpolants to achieve high accuracy for
 arbitrary =n=. Validated against =numpy.polynomial.legendre.leggauss=.
 
 #+begin_src python
-from fastgl import FastGL
+from symqe.reference.fastgl import FastGL
 import numpy as np
 
 gl = FastGL(101)
@@ -84,7 +90,7 @@ print("nodes match:", np.allclose(gl.x, x_ref, rtol=1e-8))
 print("weights match:", np.allclose(gl.w, w_ref, rtol=1e-8))
 #+end_src
 
-** Wigner-d Transforms (=wignerd.py=)
+** Wigner-d Transforms (=src/symqe/reference/wignerd.py=)
 
 Implements forward and inverse Wigner-d transforms using a three-term recurrence
 relation, JIT-compiled with JAX for performance.
@@ -94,7 +100,7 @@ relation, JIT-compiled with JAX for performance.
 - =cl_from_cf(s1, s2, cf, cos_theta, weights, lmax)=: inverse transform
 
 #+begin_src python
-from wignerd import cf_from_cl, cl_from_cf
+from symqe.reference.wignerd import cf_from_cl, cl_from_cf
 import numpy as np
 
 s1, s2 = 1, 2
@@ -106,14 +112,14 @@ cf = cf_from_cl(s1, s2, cl, cos_theta, lmax)
 print("cf:", np.array(cf))
 #+end_src
 
-** GLQuad Wrapper (=glquad.py=)
+** GLQuad Wrapper (=src/symqe/reference/glquad.py=)
 
 Combines =FastGL= and Wigner-d transforms into a convenient interface. This is
 the main numerical workhorse used by both the hand-coded kernels and the symbolic
 compiler.
 
 #+begin_src python
-from glquad import GLQuad
+from symqe.reference.glquad import GLQuad
 import numpy as np
 
 glq = GLQuad(15)
@@ -128,14 +134,14 @@ print("cl_recon:", np.array(cl_recon))
 * Symbolic Engine
 
 The symbolic engine automates the derivation of lensing kernels. Instead of
-hand-coding each kernel (as in =norm_lens.py=), we write the physics expression
+hand-coding each kernel (as in =src/symqe/reference/norm_lens.py=), we write the physics expression
 symbolically and let the compiler produce a numerical function.
 
 The engine is organized as five layers, lowest being the most general. The
 first four are domain-agnostic and reusable for any symbolic pipeline; the
 fifth is CMB-lensing-specific.
 
-** Layer 1: Atomic-factor tree (=sym_utils/atom.py=)
+** Layer 1: Atomic-factor tree (=src/symqe/engine/atom.py=)
 
 An =AtomicFactor= is a pure immutable tree:
 =Const=, =Var=, =Pow=, =Mul=, =Add=, =FuncApp(name, args)=. Constructors
@@ -150,7 +156,7 @@ Utilities: =free_vars=, =evaluate(env)=, =structural_key= (hashable identity
 for grouping), =substitute=, =walk= (bottom-up rewrite), =distribute=
 (explicit), =partition_factors= (bucket factors by predicates).
 
-** Layer 2: SymPy bridge (=sym_utils/sympy_bridge.py=)
+** Layer 2: SymPy bridge (=src/symqe/engine/sympy_bridge.py=)
 
 =from_sympy(expr)= converts a sympy expression to an =AtomicFactor= tree.
 This is the *only* place in the pipeline that calls sympy. Symbol →
@@ -160,14 +166,14 @@ the project's =wigner_3j= class) → =FuncApp(class_name, args)=. No
 domain knowledge is baked in — e.g., the bridge does not know what
 =wigner_3j= means.
 
-** Layer 3: Normal form (=sym_utils/normal_form.py=)
+** Layer 3: Normal form (=src/symqe/engine/normal_form.py=)
 
 =flatten(atom)= → =list[FlatTerm(coeff, factors)]=, the sum-of-products
 canonical form. This is the atomic-tree analogue of sympy's =.expand()=
 followed by =.as_ordered_terms()=, but entirely under our control (no
 surprise rewrites anywhere else in the tree).
 
-** Layer 4: Quotient reduction (=sym_utils/quotient.py=)
+** Layer 4: Quotient reduction (=src/symqe/engine/quotient.py=)
 
 =reduce_mod_power(terms, var_name, period, residues)= collapses
 ~var^period = residues.get(0, 1)~. For P² = 1 one passes =period=2= and
@@ -175,7 +181,7 @@ the default residues; the reducer rewrites each ~P^(2k) → 1~,
 ~P^(2k+1) → P~. Works for any idempotent or nilpotent variable (e.g.,
 Grassmann ~ε² = 0~ by passing =residues={0: Const(1), 2: Const(0)}=).
 
-** Layer 5: L12 Sum Compiler (=sym_utils/l12_sum.py=)
+** Layer 5: L12 Sum Compiler (=src/symqe/engine/l12_sum.py=)
 
 Compiles symbolic expressions of the form:
 
@@ -207,7 +213,7 @@ Example usage:
 
 #+begin_src python
 from sympy import Function, sqrt, pi
-from sym_utils.l12_sum import (
+from symqe.engine.l12_sum import (
     L12SumCompiler, wigner_3j, l, l1, l2, P
 )
 
@@ -223,7 +229,7 @@ f, terms = compiler.build_and_compile(expr, args=[l, A, B])
 # f is a numpy callable kernel(ell_out, A_array, B_array)
 #+end_src
 
-** Estimator Compiler (=sym_utils/estimator.py=)
+** Estimator Compiler (=src/symqe/engine/estimator.py=)
 
 The estimator side compiles the quadratic-estimator weight
 $g^{XY}_{\ell L \ell'}$ (single Wigner 3j per term, unlike the
@@ -244,7 +250,7 @@ Layer 5 differs: instead of pairing two Wigner 3j's to form a Wigner-d
 triple (a /GL-quadrature/ kernel), each flat term has exactly one 3j
 whose m-values are extracted directly as signed SHT spins.
 
-=sym_utils/namikawa.py= provides the shared symbolic building blocks:
+=src/symqe/engine/namikawa.py= provides the shared symbolic building blocks:
 weights $W^{x,0}$, $W^{x,+}$, $W^{x,-}$ in l-first 3j form, and =f_XY=
 builders for each of the 6 estimators (TT, TE, TB, EE, EB, BB). The
 imaginary unit on $\zeta^- = i$ (for TB/EB estimators) is carried
@@ -270,9 +276,9 @@ $1/(2L+1)$ normalization (Namikawa Eq. 82).
 
 #+begin_src python
 from sympy import sympify
-from sym_utils.l12_sum import l1, l2
-from sym_utils.namikawa import hCT, f_TT
-from sym_utils.estimator import compile_estimator, pretty_grouped
+from symqe.engine.l12_sum import l1, l2
+from symqe.engine.namikawa import hCT, f_TT
+from symqe.engine.estimator import compile_estimator, pretty_grouped
 
 g_TT = f_TT(px=+1) / (sympify(2) * hCT(l1) * hCT(l2))
 terms = compile_estimator(g_TT)
@@ -280,19 +286,14 @@ print(pretty_grouped(terms, x_name="T", y_name="T"))
 # prints 4 atomic recipes matching falafel.qe.qe_temperature_only's structure
 #+end_src
 
-=test_estimator_all.py= dumps the derived SHT plans for all 6 lensing
+=tests/test_estimator_all.py= dumps the derived SHT plans for all 6 lensing
 estimators; the per-leg =(filter, spin_transform)= structures match
 =falafel.qe='s hand-coded implementations (=gradient_spin=,
 =qe_spin_temperature_deflection=, =qe_spin_pol_deflection=).
 
-*Project status.* This is milestone 0 — analyzer only, no SHT library
-imported. The next milestone wires the =EstimatorTerm= list to a
-=pixell= backend and validates bit-for-bit against =falafel.qe= on
-synthetic alms. See [[Future Work]] below.
-
 * Lensing Normalization Kernels
 
-** Basis Kernels (=norm_lens.py=)
+** Basis Kernels (=src/symqe/reference/norm_lens.py=)
 
 All estimator normalizations are built from 8 basis kernels corresponding to
 $\Sigma$ and $\Gamma$ operations with spin-0 and spin-2 fields:
@@ -321,18 +322,18 @@ These are combined to form the standard quadratic estimator normalizations:
 
 ** Hand-coded vs Symbolic
 
-The kernels in =norm_lens.py= are hand-derived and manually translated to code.
-The symbolic engine (=test_norm_sym.py=) aims to reproduce these automatically
+The kernels in =src/symqe/reference/norm_lens.py= are hand-derived and manually translated to code.
+The symbolic engine (=tests/test_norm_sym.py=) aims to reproduce these automatically
 from the physics definitions.
 
 * Testing the Symbolic Compiler
 
-=test_norm_sym.py= defines the lensing weight functions symbolically and compiles
+=tests/test_norm_sym.py= defines the lensing weight functions symbolically and compiles
 all 8 basis kernels through the symbolic pipeline.
 
 #+begin_src python
 from sympy import Function, sqrt, pi, I
-from sym_utils.l12_sum import (
+from symqe.engine.l12_sum import (
     L12SumCompiler, wigner_3j, l, l1, l2, P
 )
 
@@ -402,19 +403,27 @@ for name, f in kernels_lens_func.items():
     print(f"{name}: min={result.min():.3e}, max={result.max():.3e}")
 #+end_src
 
-* Running the Full Test
+* Running the Test Suite
+
+With the package installed (=pip install -e .[dev]=):
 
 #+begin_src shell :results output
-module load scipy-stack && python test_norm_sym.py
+pytest tests/
+#+end_src
+
+Or run a specific regression directly:
+
+#+begin_src shell :results output
+python tests/test_norm_sym.py
 #+end_src
 
 * Validation Against pytempura
 
-=comp_tempura.py= compares the hand-coded kernels against the established
+=scripts/analysis/comp_tempura.py= compares the hand-coded kernels against the established
 =pytempura= library for TT, TE, EE, and BB normalizations up to $\ell_\mathrm{max} = 4000$.
 
 #+begin_src shell :results output
-module load scipy-stack && python comp_tempura.py
+python scripts/analysis/comp_tempura.py
 #+end_src
 
 * Quadratic Estimator Theory
@@ -503,7 +512,7 @@ $$\Sigma^{(\times),xy}_L[A,B] = \frac{1}{2L+1} \sum_{\ell\ell'} W^{x,0}_{\ell L 
 
 $$\Gamma^{(\times),xy}_L[A,B] = \frac{1}{2L+1} \sum_{\ell\ell'} W^{x,0}_{\ell L \ell'} W^{y,+}_{\ell' L \ell} A_\ell B_{\ell'}$$
 
-with $s = 0, \pm$. These are the 8 basis kernels implemented in =norm_lens.py=.
+with $s = 0, \pm$. These are the 8 basis kernels implemented in =src/symqe/reference/norm_lens.py=.
 Key symmetries: $\Sigma^{(s),xy}[A,B] = \Sigma^{(s),yx}[B,A]$ and
 $\Gamma^{(s),xy}[A,B] = \Gamma^{(s),yx}[B,A]$.
 
@@ -574,7 +583,7 @@ The pipeline:
 4. Multiply in real space to get deflection $v(\hat{n})$
 5. =map2alm_spin= back to harmonic space
 6. Multiply by $\sqrt{\ell(\ell+1)}$ for $\phi$ (or curl)
-7. Apply normalization $A_L$ (from =norm_lens.py= or =pytempura=)
+7. Apply normalization $A_L$ (from =src/symqe/reference/norm_lens.py= or =pytempura=)
 
 Falafel returns *unnormalized* estimates; normalization must be applied separately.
 
@@ -586,40 +595,40 @@ Falafel returns *unnormalized* estimates; normalization must be applied separate
          │
          ▼
  ┌───────────────────────────────┐
- │  sym_utils/sympy_bridge.py    │  Layer 2: sympy → atom tree
+ │  engine/sympy_bridge.py       │  Layer 2: sympy → atom tree
  │  from_sympy                   │
  └──────────────┬────────────────┘
-                │  AtomicFactor tree (atom.py, Layer 1)
+                │  AtomicFactor tree (engine/atom.py, Layer 1)
                 ▼
  ┌───────────────────────────────┐
- │  sym_utils/l12_sum.py         │  Layer 5: Wigner-specific rewrites
+ │  engine/l12_sum.py            │  Layer 5: Wigner-specific rewrites
  │  _normalize_w3j_args          │    (w3j column permutation → P factor)
  └──────────────┬────────────────┘
                 │
                 ▼
  ┌───────────────────────────────┐
- │  sym_utils/normal_form.py     │  Layer 3: flatten to sum-of-products
+ │  engine/normal_form.py        │  Layer 3: flatten to sum-of-products
  │  flatten                      │    (explicit distribute; no sympy)
  └──────────────┬────────────────┘
                 │  list[FlatTerm]
                 ▼
  ┌───────────────────────────────┐
- │  sym_utils/quotient.py        │  Layer 4: reduce P^k mod (P²-1)
+ │  engine/quotient.py           │  Layer 4: reduce P^k mod (P²-1)
  │  reduce_mod_power             │
  └──────────────┬────────────────┘
                 │  P-reduced FlatTerms
                 ▼
  ┌───────────────────────────────┐
- │  sym_utils/l12_sum.py         │  Layer 5: FlatTerm → Term,
+ │  engine/l12_sum.py            │  Layer 5: FlatTerm → Term,
  │  _flat_term_to_term,          │    w3j pair → wigd triple,
  │  group + emit                 │    absorb P, canonicalize wigd,
  └──────────────┬────────────────┘    group by (wigd_l, l_factor),
                 │                    emit numpy closure
                 ▼
  ┌───────────────────────────────┐
- │  glquad.py                    │  Gauss-Legendre quadrature
- │  ├── fastgl.py                │    (Bogaert algorithm for nodes)
- │  └── wignerd.py               │    JAX JIT Wigner-d recurrence
+ │  reference/glquad.py          │  Gauss-Legendre quadrature
+ │  ├── reference/fastgl.py      │    (Bogaert algorithm for nodes)
+ │  └── reference/wignerd.py     │    JAX JIT Wigner-d recurrence
  └──────────────┬────────────────┘
                 │
                 ▼
@@ -641,11 +650,11 @@ Two complementary checks confirm the symbolic engine is correct.
 
 ** Per-triangle sanity: symbolic vs brute-force 3j summation
 
-=comp_sym_vs_hand.py= computes each of the 8 basis kernels
+=scripts/analysis/comp_sym_vs_hand.py= computes each of the 8 basis kernels
 $\Sigma^0, \Sigma^\pm, \Sigma^\times, \Gamma^0, \Gamma^\pm, \Gamma^\times$
 by two independent routes:
 
-1. The symbolic compiler pipeline (=sym_utils/l12_sum.py=).
+1. The symbolic compiler pipeline (=src/symqe/engine/l12_sum.py=).
 2. A direct double-sum $\sum_{\ell_1, \ell_2}$ using
    =sympy.physics.wigner.wigner_3j= — exact rational 3j arithmetic.
 
@@ -656,7 +665,7 @@ compiler at the atomic level before any recipe composition.
 
 ** End-to-end: reconstruction noise vs pytempura-validated reference
 
-=check_full_norm.py= is the substantive check. It runs at realistic
+=scripts/analysis/check_full_norm.py= is the substantive check. It runs at realistic
 $\ell_{\max} = 3000, \mathrm{rlmax} = 3000$ on the CMB lensed spectrum from
 =cosmo2017_10K_acc3_lensedCls.dat= (the same file used by the Symlens.jl
 =demo3_tempura.ipynb= comparison), with a dummy noise model
@@ -665,8 +674,8 @@ $N_\ell^{\rm pol} = \sqrt{2}\, N_\ell^{TT}$.
 
 The 8 symbolic kernels are combined via the Namikawa recipe into the six
 quadratic-estimator normalizations and compared against the hand-coded
-=norm_lens.py= (which itself has been validated against =pytempura= at
-$\text{rtol} \sim 10^{-9}$ — see =comp_tempura.py=).
+=src/symqe/reference/norm_lens.py= (which itself has been validated against =pytempura= at
+$\text{rtol} \sim 10^{-9}$ — see =scripts/analysis/comp_tempura.py=).
 
 Reconstruction-noise curves $L^4 N_L^{\phi}$ for each estimator (hand-coded
 solid, symbolic-compiled dashed — they overplot indistinguishably):
@@ -698,13 +707,18 @@ Agreement is at the floating-point accumulation limit of the GL quadrature
 end-to-end agreement at realistic scales together demonstrate the symbolic
 compiler is correct at both the component and composite level.
 
-* Future Work
+* Milestones
 
-Ideas for extending the symbolic engine beyond the current scope.
+The estimator-compiler side of the project has progressed through five
+milestones, all validated bit-for-bit against =falafel= and
+=pytempura= (with one documented EB semantic difference, and one
+deliberate reproduction of an upstream falafel int-truncation bug).
+Each section below records the validation state, the rules / abstractions
+added, and the diagnostics scripts.
 
-** Estimator compiler milestone 1 — TT bit-for-bit match ✅
+** Milestone 1 — TT bit-for-bit match ✅
 
-Complete. =sym_utils/estimator_backend.py= implements
+Complete. =src/symqe/engine/estimator_backend.py= implements
 
 - =strip_gamma(terms)= — removes $\sqrt{2\ell_1+1}$, $\sqrt{2\ell_2+1}$,
   $\sqrt{2L+1}$ factors from =X_filter=, =Y_filter=, =L_factor=
@@ -720,7 +734,7 @@ Complete. =sym_utils/estimator_backend.py= implements
   (factor Δ = 2), and (d) our residual $1/\sqrt{4\pi}$ γ-prefactor
   (factor $\sqrt{4\pi}$).
 
-=test_estimator_tt_vs_falafel.py= runs both paths on the same synthetic
+=tests/test_estimator_tt_vs_falafel.py= runs both paths on the same synthetic
 $T_{\ell m}$ and confirms bit-for-bit agreement:
 
 #+begin_example
@@ -732,7 +746,7 @@ Symbolic / falafel ratio statistics:
     1.449e-15
 #+end_example
 
-** Estimator compiler milestone 2 — polarization ✅
+** Milestone 2 — polarization ✅
 
 Status: all 6 estimators validated bit-for-bit against =falafel.qe=.
 
@@ -770,9 +784,9 @@ W⁺ term (T-through-CTE gradient, E plain → ~qe_pol_only~).  Our
 =compile_te= runs both halves and sums the alms, with independent
 bookkeeping coefficients for each half.
 
-** Estimator compiler milestone 3 — native SHT backend ✅
+** Milestone 3 — native SHT backend ✅
 
-=sym_utils/estimator_native.py= implements the same pipeline without a
+=src/symqe/engine/estimator_native.py= implements the same pipeline without a
 =falafel= runtime dependency.  The SHT bookkeeping (=rot2d=, =irot2d=,
 =Pixelization=, =gradient_spin=, =deflection_map_to_phi_curl_alms=,
 =qe_temperature_only=, =qe_pol_only=) is inlined, using =pixell= and
@@ -804,9 +818,9 @@ symbolically.
 
 *Full 6-estimator parity (TT/EE/BB/TB/EB/TE)* — all match backend A
 bit-for-bit at ~10⁻¹⁷ machine precision; see
-=test_estimator_native_vs_backendA.py=.
+=tests/test_estimator_native_vs_backendA.py=.
 
-*Demo: new physics beyond lensing.*  =demo_rotation_estimator.py= builds
+*Demo: new physics beyond lensing.*  =scripts/demos/demo_rotation_estimator.py= builds
 the rotation EB estimator's weight function symbolically
 (=W^{α,+}= from =namikawa.py=, analogous to Symlens.jl's =Wₐ⁺=) and
 compiles it.  The resulting SHT recipe is structurally different from
@@ -824,13 +838,13 @@ is assembled directly from the symbolic recipe.  The coefficient
 bookkeeping is simpler than the lensing cases because the ±ζ⁻ pair
 is combined in real space before the inverse transform, producing a
 real scalar α_LM from imaginary-coefficient atomic terms.
-=test_rotation_native.py= runs the pipeline on synthetic EE/BB alms
+=tests/test_rotation_native.py= runs the pipeline on synthetic EE/BB alms
 and confirms that the output is pure-real with a plausible
 reconstruction-noise-like spectrum.
 
-** Estimator compiler milestone 4 — generic emitter ✅
+** Milestone 4 — generic emitter ✅
 
-Status: =compile_native= in =sym_utils/estimator_native.py= now executes
+Status: =compile_native= in =src/symqe/engine/estimator_native.py= now executes
 arbitrary =EstimatorTerm= lists with no per-estimator hand-coding.  All
 6 lensing estimators (TT/TE/TB/EE/BB) plus rotation and source match
 =compile_*_native= bit-for-bit (std/mean ≲ 5e-15); EB retains a 5.6%
@@ -945,7 +959,7 @@ $\sqrt{(\ell-2)(\ell+3)} \to \lfloor\sqrt{(\ell-2)(\ell+3)}\rfloor$
 (and analogously for the lowering ladder).  Asymptotically the
 truncation loses at most ~0.5 out of ~ℓ, so the relative error scales
 as $1/(2\ell)$.  Per-ℓ ratios (computed by
-=probe_int_trunc_error_summary.py=):
+=scripts/analysis/probe_int_trunc_error_summary.py=):
 
 | ℓ    | raising error | lowering error |
 |------+---------------+----------------|
@@ -995,7 +1009,7 @@ is_W_plus = all(abs(c.imag) < 1e-12 * (abs(c.real) + eps)
 #+end_src
 
 *Final regression* (=compile_native= vs hand-coded =compile_*_native=,
-HEALPix NSIDE=256, LMAX=200; see =probe_regression_final.py=):
+HEALPix NSIDE=256, LMAX=200; see =archive/probes/probe_regression_final.py=):
 
 | Estimator | std/mean  | xcorr      | signed slope |
 |-----------+-----------+------------+--------------|
@@ -1068,36 +1082,38 @@ gradient ladders*, *asymmetric normalization*, and *higher output
 spin* ($|s_L| = 2$) — a genuine extension beyond the Namikawa
 lensing family.
 
-*Probe scripts (in repo root, retained for diagnostics).*
+*Diagnostic scripts.*  The canonical regressions and quantification
+probes for milestone 4 live under =scripts/analysis/=; one-shot
+session-specific debug scripts are archived under =archive/probes/=.
 
-- =probe_regression_final.py= — canonical regression across all 6
-  lensing estimators after milestone 4.
-- =probe_int_trunc.py= — monkey-patched =compile_native= demonstrating
+- =scripts/analysis/probe_int_trunc.py= — monkey-patched =compile_native= demonstrating
   the int-truncation rule alone brings EE/BB/TB/TE from std/mean
   ~5e-3 down to ~1e-15.
-- =probe_int_trunc_error_summary.py= — quantifies the upstream falafel
+- =scripts/analysis/probe_int_trunc_error_summary.py= — quantifies the upstream falafel
   int-truncation error per-ℓ and signal-weighted up to ℓmax = 3000;
   the source of the impact tables documented above.
-- =probe_qe_shear_final.py= — canonical qe_shear regression:
+- =scripts/analysis/probe_qe_shear_final.py= — canonical qe_shear regression:
   symbolic f_shear vs inlined falafel.qe.qe_shear, bit-for-bit
   (std/mean ~5e-16).  Demonstrates the engine works on estimators
   outside the Namikawa lensing family.
-- =probe_te_halves.py= — TE pol-half vs temp-half breakdown that led
+- =archive/probes/probe_regression_final.py= — canonical regression across all 6
+  lensing estimators after milestone 4.
+- =archive/probes/probe_te_halves.py= — TE pol-half vs temp-half breakdown that led
   to rule 5.
-- =probe_eb_per_half.py= — EB structural breakdown showing the
+- =archive/probes/probe_eb_per_half.py= — EB structural breakdown showing the
   Hu-Okamoto convention difference.
-- =probe_all_plans_inspect.py=, =probe_ee_plan_inspect.py=,
-  =probe_eb_plan_inspect.py=, =probe_tb_plans.py= — plan
+- =archive/probes/probe_all_plans_inspect.py=, =archive/probes/probe_ee_plan_inspect.py=,
+  =archive/probes/probe_eb_plan_inspect.py=, =archive/probes/probe_tb_plans.py= — plan
   coefficient/signature dumps for each estimator.
 
-** Estimator compiler milestone 5 — unified compile + search prototype ✅
+** Milestone 5 — unified compile + search prototype ✅
 
-Status: =sym_utils/compile_qe.py= compiles BOTH the estimator and the
+Status: =src/symqe/engine/compile_qe.py= compiles BOTH the estimator and the
 Hu-Okamoto normalization $A_L$ from the same symbolic weight $g$.
 The A_L side is verified bit-for-bit against the pytempura-validated
-=norm_lens.qtt= (max rel diff $1.3 \times 10^{-14}$ over
+=symqe.reference.norm_lens.qtt= (max rel diff $1.3 \times 10^{-14}$ over
 $L \in [20, 200]$).  A small search-tool prototype
-(=demo_search_unified.py=) shows the correct Hu-Okamoto weight rises
+(=scripts/demos/demo_search_unified.py=) shows the correct Hu-Okamoto weight rises
 to the top when candidates are ranked by A_L-normalized cross-
 correlation with a known $\phi_{\rm true}$.
 
@@ -1113,7 +1129,7 @@ both outputs.
 
 *API.*
 #+begin_src python
-from sym_utils.compile_qe import compile_qe
+from symqe.engine.compile_qe import compile_qe
 
 estimator, A_L_fn, N_L_phi_fn = compile_qe(
     g_symbolic,            # sympy expression for g = f / (Δ · hCxx · hCyy)
@@ -1148,7 +1164,7 @@ the normalization integrand is $|g|^2 = g \cdot \bar g$; in practice
 $g \cdot g$ gives the same result since the $i$ factors square to
 $-1$ and the integrand contains a consistent sign.)
 
-*Search prototype (=demo_search_unified.py=).*  Enumerate 5 candidate
+*Search prototype (=scripts/demos/demo_search_unified.py=).*  Enumerate 5 candidate
 weights for CMB lensing TT (correct Hu-Okamoto, wrong ladder factor,
 wrong 3j m-row, no CT response, trivial 3j "garbage"), compile each
 uniformly through compile_qe, apply each to a pixell-lensed CMB
@@ -1177,21 +1193,45 @@ strawman candidates above the correct f_TT in the demo.  The
 gauge-invariant quantity is the cross-correlation coefficient of the
 A_L-normalized output with any proxy $\phi$ signal (simulation,
 galaxy-cross-correlation, etc.) — that's what the prototype uses.
-=demo_search_fisher.py= is kept as an illustration of the pure-Fisher
+=scripts/demos/demo_search_fisher.py= is kept as an illustration of the pure-Fisher
 pathology.
 
 *What milestone 5 unlocks.*  A symbolic-search pipeline where each
 candidate weight is compiled into a *self-consistent triple*
 (estimator, A_L, N_L^phi) in one call, evaluated on data, and ranked.
-Remaining pieces for a production search tool:
+The remaining pieces for a production search tool (grammar enumerator,
+e-graph collapse, gauge-fixing, discovery objective) are listed under
+[[Future Work]] below.
 
-1. *Grammar enumerator* — currently candidates are hand-picked.  BFS
-   over the expression grammar $\{\text{wigner\_3j}, a(\ell, s),
-   C_{\rm spectrum}, P\}$ up to a size budget (~50 lines).
+*Scripts retained for diagnostic purposes.*
+
+- =scripts/demos/demo_search_unified.py= — canonical search demo with both
+  cross-correlation and Fisher rankings.
+- =scripts/demos/demo_search_fisher.py= — pure-Fisher ranking showing the gauge
+  pathology.
+- =scripts/demos/demo_search_diag.py= — per-L breakdown that surfaced the need for
+  (2L+1)-weighted $\langle r(L) \rangle$ (naive global xcorr is
+  dominated by low-$L$ $\phi$ power where the QE has no support).
+- =scripts/demos/demo_search_lensing.py= — earlier iteration using cross-
+  correlation only (without A_L compilation).
+
+* Future Work
+
+Items that are genuinely open — work has not started or is partial.
+
+** Production search tool
+
+Milestone 5 established the compilation triple (estimator, A_L, N_L^phi)
+and a working lensing oracle demo.  Turning the prototype into a general
+search tool needs:
+
+1. *Grammar enumerator* — candidates are currently hand-picked.  BFS
+   over $\{\text{wigner\_3j}, a(\ell, s), C_{\rm spectrum}, P\}$ up to a
+   size budget.  ~50 lines.
 2. *E-graph collapse* — many enumerated candidates differ only by
    scalar multiples, 3j column permutations, or $P$ absorption.
-   Equality saturation (already flagged under [[Future Work]] below)
-   would canonicalize them automatically.
+   Equality saturation (see section below) would canonicalize them
+   automatically, shrinking the search space.
 3. *Gauge-fixing for Fisher ranking* — if oracle-free scoring is
    required, rescale each candidate's $g$ so that $A_L$ at a
    reference $L$ matches a common value, then compare $N_L^\phi$
@@ -1199,21 +1239,9 @@ Remaining pieces for a production search tool:
 4. *Objective for unknown-field discovery* — the deepest gap, and
    outside the engine scope.  Candidates: max non-Gaussianity
    response, orthogonality to known contaminants, cross-correlation
-   with an external tracer.
+   with an external tracer.  This is the actual research question.
 
-Items 1–3 are ~a week each.  Item 4 is the actual research question.
-
-*Scripts retained for diagnostic purposes.*
-
-- =demo_search_unified.py= — canonical search demo with both
-  cross-correlation and Fisher rankings.
-- =demo_search_fisher.py= — pure-Fisher ranking showing the gauge
-  pathology.
-- =demo_search_diag.py= — per-L breakdown that surfaced the need for
-  (2L+1)-weighted $\langle r(L) \rangle$ (naive global xcorr is
-  dominated by low-$L$ $\phi$ power where the QE has no support).
-- =demo_search_lensing.py= — earlier iteration using cross-
-  correlation only (without A_L compilation).
+Items 1–3 are ~a week each.
 
 ** Pattern-based rewrite rules (Rule / Prewalk / Postwalk)
 
@@ -1235,7 +1263,7 @@ of mismatched subexpressions. TODOs listed there included: rule chaining,
 predicates on rewriters, and equation saturation.
 
 A port of the =Rule / Prewalk / Postwalk= design onto the atomic-tree
-engine would be ~80 lines as =sym_utils/patterns.py=:
+engine would be ~80 lines as =src/symqe/engine/patterns.py=:
 
 - =Rule.parse("?a + ?b -> ?b * ?a")= — slot variables prefixed with ~?~.
 - =match(pattern, target, slots) -> dict | None= — structural unification

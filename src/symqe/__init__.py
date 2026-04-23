@@ -57,6 +57,10 @@ from .engine.estimator import compile_estimator, EstimatorTerm, pretty, pretty_g
 from .engine.l12_sum import compile_norm, NormCompiler
 from .engine.compile_qe import compile_qe, compile_qe_from_f
 from .engine.scoring import fisher_fom
+from .engine.enumerate import (
+    enumerate_candidates, score_candidates,
+    m_triples, leg_filters, canonical_key,
+)
 from .engine.estimator_native import (
     build_estimator,
     compile_native,        # low-level: raw (alm_pair, spin_alm) interface
@@ -89,6 +93,8 @@ __all__ = [
     "build_estimator", "compile_native",
     # scoring / search
     "fisher_fom",
+    "enumerate_candidates", "score_candidates",
+    "m_triples", "leg_filters", "canonical_key",
     # per-field convenience (bit-for-bit with falafel/pytempura)
     "compile_tt", "compile_ee", "compile_bb",
     "compile_tb", "compile_eb", "compile_te",

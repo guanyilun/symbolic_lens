@@ -16,6 +16,40 @@ normalization kernels. It combines:
 The goal is to go from a physics expression (products of Wigner 3j symbols summed
 over two ells) to a compiled numerical kernel automatically.
 
+* Quick start
+
+The public surface lives at the top-level =symqe= package.  A typical
+physicist session is one import and three lines:
+
+#+begin_src python
+import symqe as sq
+
+g = sq.f_TT()   # or f_EE / f_EB / f_rot_EB / f_ampl_TT / ...
+estimator = sq.build_estimator(g, lmax=LMAX, nside=NSIDE, X='T', Y='T')
+phi_alm   = estimator(T_alm, T_alm, spectra)
+#+end_src
+
+For unified (estimator, normalization, reconstruction noise):
+
+#+begin_src python
+estimator, A_L_fn, N_L_phi_fn = sq.compile_qe_from_f(
+    f_TT, lmax=LMAX, Delta=2, hCxx=sq.hCT, hCyy=sq.hCT,
+    user_funcs=[sq.hCT, sq.CT], nside=NSIDE,
+)
+fom = sq.fisher_fom(N_L_phi_fn(obs_cltt, cltt), A_L_fn(obs_cltt, cltt),
+                    L_range=range(40, 181), L_ref=80)
+#+end_src
+
+Ergonomically-named members (partial list): =f_TT=, =f_EE=, =f_EB=,
+=f_rot_EB=, =f_ampl_TT= (weight builders); =build_estimator=,
+=compile_estimator=, =compile_norm=, =compile_qe=, =compile_qe_from_f=,
+=compile_native=, =compile_tt=, =compile_ee=, =compile_eb=, ...
+(compilers); =fisher_fom= (gauge-fixed scoring); =Pixelization=,
+=EstimatorTerm=, =NormCompiler= (types); =hCT=, =hCE=, =hCB=, =a=,
+=gamma_f=, =q_plus=, =q_minus= (spectra and ladder helpers);
+=l=, =l1=, =l2=, =P=, =wigner_3j= (DSL grammar).  See the following
+sections for how each piece fits into the symbolic pipeline.
+
 * Setup
 
 The project is pip-installable:
@@ -214,7 +248,7 @@ Example usage:
 #+begin_src python
 from sympy import Function, sqrt, pi
 from symqe.engine.l12_sum import (
-    L12SumCompiler, wigner_3j, l, l1, l2, P
+    NormCompiler, wigner_3j, l, l1, l2, P
 )
 
 A, B = Function("A"), Function("B")
@@ -224,7 +258,7 @@ expr = wigner_3j(l, l1, l2, 2, -2, 0)**2 * \
        ((2*l1 + 1)/(2*pi) * (2*l2 + 1) / (2*pi)) * \
        (1 + P) * B(l2) * A(l1)
 
-compiler = L12SumCompiler(lmax=10, rlmin=1, rlmax=10)
+compiler = NormCompiler(lmax=10, rlmin=1, rlmax=10)
 f, terms = compiler.build_and_compile(expr, args=[l, A, B])
 # f is a numpy callable kernel(ell_out, A_array, B_array)
 #+end_src
@@ -334,7 +368,7 @@ all 8 basis kernels through the symbolic pipeline.
 #+begin_src python
 from sympy import Function, sqrt, pi, I
 from symqe.engine.l12_sum import (
-    L12SumCompiler, wigner_3j, l, l1, l2, P
+    NormCompiler, wigner_3j, l, l1, l2, P
 )
 
 A, B = Function("A"), Function("B")
@@ -381,7 +415,7 @@ kernels_lens["Gm"] = gamma_p_expr.subs(P, -P)
 kernels_lens["Gx"] = build_gamma(W_lens_0, W_lens_p, l, c_phi, c_phi)
 
 # Compile
-compiler = L12SumCompiler(lmax=100, rlmin=1, rlmax=100)
+compiler = NormCompiler(lmax=100, rlmin=1, rlmax=100)
 kernels_lens_func = {}
 for name, expr in kernels_lens.items():
     print(f"Building {name}...")
@@ -811,9 +845,10 @@ on both backends simultaneously.
 
 *What milestone 3 unlocks.*  The native backend accepts arbitrary
 =EstimatorTerm= lists — not only the lensing templates.  The same
-compilation path (=compile_estimator → strip_gamma → compile_*_native=)
-applies to estimators for CMB rotation (anisotropic birefringence, α),
-patchy τ, point sources, or any new weight function =W= a user writes
+compilation path (=compile_estimator → compile_*=, with γ-stripping
+now folded automatically into =compile_estimator=) applies to
+estimators for CMB rotation (anisotropic birefringence, α), patchy τ,
+point sources, or any new weight function =W= a user writes
 symbolically.
 
 *Full 6-estimator parity (TT/EE/BB/TB/EB/TE)* — all match backend A
@@ -829,7 +864,7 @@ the lensing EB case — output spin is =0= (not =1=) and there is no
 distortion rather than a lensing gradient.  The engine derives this
 automatically from the symbolic =W=.
 
-*End-to-end rotation pipeline.*  =compile_rot_eb_native= in
+*End-to-end rotation pipeline.*  =compile_rot_eb= in
 =estimator_native.py= executes the rotation estimator numerically using
 only the inlined SHT primitives.  This is the first pipeline that does
 not map onto a falafel template: a bespoke primitive
@@ -847,11 +882,18 @@ reconstruction-noise-like spectrum.
 Status: =compile_native= in =src/symqe/engine/estimator_native.py= now executes
 arbitrary =EstimatorTerm= lists with no per-estimator hand-coding.  All
 6 lensing estimators (TT/TE/TB/EE/BB) plus rotation and source match
-=compile_*_native= bit-for-bit (std/mean ≲ 5e-15); EB retains a 5.6%
+the per-field wrappers =compile_tt=, =compile_ee=, ... bit-for-bit up
+to a known per-estimator scale (std/mean ≲ 5e-15); EB retains a 5.6%
 Hu-Okamoto structural difference (documented below).
 
+Post-2026-04-22 the per-field wrappers are ~5-line delegations over
+=compile_native= that multiply by the known scale: 4√π for
+TT/EE/BB/TB/TE, 2√π for rotation-EB, √π for source-TT.  The scale
+cancels identically in any A_L-normalized estimate; see
+=compile_qe_from_f=.
+
 *Why a generic emitter?*  Milestones 1-3 hand-coded one emitter per
-estimator (=compile_tt_native=, =compile_ee_native=, …).  Each one
+estimator (=compile_tt=, =compile_ee=, …).  Each one
 extracts the gradient pair, applies a hand-tuned =pair_coeff=, and
 calls a falafel-shaped primitive.  This works, but:
 
@@ -1008,8 +1050,8 @@ is_W_plus = all(abs(c.imag) < 1e-12 * (abs(c.real) + eps)
                 for c in plan.coeffs.values())
 #+end_src
 
-*Final regression* (=compile_native= vs hand-coded =compile_*_native=,
-HEALPix NSIDE=256, LMAX=200; see =archive/probes/probe_regression_final.py=):
+*Final regression* (=compile_native= vs per-field wrappers =compile_tt=,
+=compile_ee=, ...; HEALPix NSIDE=256, LMAX=200):
 
 | Estimator | std/mean  | xcorr      | signed slope |
 |-----------+-----------+------------+--------------|
@@ -1020,13 +1062,22 @@ HEALPix NSIDE=256, LMAX=200; see =archive/probes/probe_regression_final.py=):
 | BB        | 4.5e-16   | +1.000000  | 0.14105      |
 | EB        | 5.6e-2    | +0.993415  | 0.14197      |
 
-The constant 0.14105 offset on TT/TE/TB/EE/BB is the per-estimator
-=pair_coeff= that hand-coded emitters absorb internally.  The generic
-emitter intentionally does not bake this in — the user multiplies it
-externally, since for new-physics estimators (rotation, source, …) the
-right normalization depends on the physics, not on the SHT recipe.
+The constant 0.14105 = 1/(4√π) offset on TT/TE/TB/EE/BB is the
+per-estimator scale (γ-residual × X↔Y × Δ) that the per-field wrappers
+apply explicitly:
 
-*Why EB is different.*  =compile_eb_native= implements the
+| Estimator          | Scale factor applied by =compile_*= |
+|--------------------+-------------------------------------|
+| TT, EE, BB, TB, TE | 4√π                                 |
+| ROT-EB             | 2√π                                 |
+| SRC-TT             |  √π                                 |
+
+The generic =compile_native= intentionally does NOT bake this in —
+the scale cancels in any A_L-normalized estimate (see
+=compile_qe_from_f= in Milestone 5), so for search/ranking work you
+can skip the per-field wrapper entirely.
+
+*Why EB is different.*  =compile_eb= implements the
 Hu-Okamoto-simplified form: only the
 $W^{x,-}_{\ell L \ell'} \cdot C^{EE}_\ell$ half (ladder on E-leg),
 doubled via =pair_coeff * 2=, assuming the primordial B-mode
@@ -1038,7 +1089,8 @@ more physically correct; hand-coded matches the standard EB
 normalization convention.  This is a semantic decision, not a bug.
 
 *What milestone 4 unlocks.*  The pipeline
-=compile_estimator → strip_gamma → fuse_spin_pairs → compile_native=
+=compile_estimator → fuse_spin_pairs → compile_native=
+(γ-stripping now auto-invoked inside =compile_estimator=)
 now accepts ANY user-written symbolic weight =W=.  The 7 rules above
 are formalism-driven (Namikawa convention vs Newman-Penrose ladder, W^+
 vs W^- parity, hand-coded SHT picks) and apply uniformly across
@@ -1127,20 +1179,28 @@ difference on full-sky spectra in [[Validation]]); milestone 5 just
 wires it to the estimator pipeline so one symbolic expression drives
 both outputs.
 
-*API.*
+*API — prefer =compile_qe_from_f= for new work.*
 #+begin_src python
-from symqe.engine.compile_qe import compile_qe
+import symqe as sq
 
-estimator, A_L_fn, N_L_phi_fn = compile_qe(
-    g_symbolic,            # sympy expression for g = f / (Δ · hCxx · hCyy)
+# Pass the physical weight f directly; the engine derives the
+# minimum-variance filter g = f / (Δ · hCxx · hCyy) internally.
+estimator, A_L_fn, N_L_phi_fn = sq.compile_qe_from_f(
+    f_symbolic,
     lmax=200,
     Delta=2,
-    hCxx=hCT, hCyy=hCT,    # IV-filter Function classes in g
-    user_funcs=[hCT, CT],  # all Function classes in g (positional order
-                           # of the returned fn's spectrum args)
-    px=px,                 # or nside=..., or shape+wcs for CAR
+    hCxx=sq.hCT, hCyy=sq.hCT,    # IV-filter Function classes
+    user_funcs=[sq.hCT, sq.CT],  # positional order of spectra arguments
+    px=px,                       # or nside=..., or shape+wcs for CAR
 )
 #+end_src
+
+The original =sq.compile_qe(g, ...)= is kept for back-compat — it
+takes the filter =g= and silently treats $f = g \cdot \Delta \hat C
+\hat C$ as the implied response.  That's correct when =g= is already
+the minimum-variance filter for the user's intended target; for search
+work where candidates differ structurally, =compile_qe_from_f= is the
+gauge-correct entry point.
 
 =estimator= drives =compile_native= as before; =A_L_fn(*spectra)=
 evaluates the Hu-Okamoto normalization array; =N_L_phi_fn(*spectra)=
@@ -1148,21 +1208,19 @@ gives the reconstruction noise power
 $A_L^2 \cdot \langle g^2 \cdot \hat C_{\rm XX}(\ell_1) \cdot \hat
 C_{\rm YY}(\ell_2) \rangle / (2L+1)$.
 
-*A_L derivation in one line.*  For $g = f / (\Delta \hat C_{\rm XX}
-\hat C_{\rm YY})$:
+*A_L derivation in one line.*  For the minimum-variance filter
+$g = f / (\Delta \hat C_{\rm XX} \hat C_{\rm YY})$:
 
 $$A_L^{-1}(L) = \frac{1}{2L+1} \sum_{\ell_1 \ell_2} f \cdot g
              = \frac{1}{2L+1} \sum_{\ell_1 \ell_2} g^2 \cdot \Delta \cdot
                \hat C_{\rm XX}(\ell_1) \cdot \hat C_{\rm YY}(\ell_2)$$
 
-(The second form avoids the user writing $f$ separately; compile_qe
-just squares the user's $g$, multiplies by $\Delta \hat C \hat C$,
-=cancel()= s the $1/\hat C$ factors, and hands the result to
-=L12SumCompiler=.  For ζ^- estimators like TB/EB the imaginary
-coefficients are carried through the atomic tree correctly because
-the normalization integrand is $|g|^2 = g \cdot \bar g$; in practice
-$g \cdot g$ gives the same result since the $i$ factors square to
-$-1$ and the integrand contains a consistent sign.)
+=compile_qe_from_f= uses the first form (=g·f=), which is gauge-correct
+for any input f; the legacy =compile_qe(g)= uses the second form
+(=g²·Δ·hC·hC=), which agrees only when f and g are paired optimally.
+For ζ^- estimators like TB/EB the imaginary coefficients are carried
+through the atomic tree correctly because the $i$ factors square to
+$-1$ and the integrand contains a consistent sign.
 
 *Search prototype (=scripts/demos/demo_search_unified.py=).*  Enumerate 5 candidate
 weights for CMB lensing TT (correct Hu-Okamoto, wrong ladder factor,
@@ -1183,32 +1241,50 @@ $\phi_{\rm true}$:
 The correct weight wins decisively; close structural variants score
 visibly lower; unrelated physics collapses toward zero.
 
-*Gauge subtlety with pure-Fisher scoring.*  A naive FOM
-=Fisher = sum (2L+1) / N_L^phi= appears attractive (no oracle
-$\phi_{\rm true}$ needed) but is *gauge-dependent* under $g \to
-\alpha g$: because the user-supplied $g$ treats $f$ as derived
-($f = g \cdot \Delta \hat C \hat C$), rescaling $g$ rescales both
-response and noise non-uniformly.  Pure-Fisher therefore ranks
-strawman candidates above the correct f_TT in the demo.  The
-gauge-invariant quantity is the cross-correlation coefficient of the
-A_L-normalized output with any proxy $\phi$ signal (simulation,
-galaxy-cross-correlation, etc.) — that's what the prototype uses.
-=scripts/demos/demo_search_fisher.py= is kept as an illustration of the pure-Fisher
-pathology.
+*Gauge-fixed Fisher scoring (=fisher_fom=).*  The naive FOM
+=Fisher = sum (2L+1) / N_L^phi= is *gauge-dependent* under
+$g \to \alpha g$: $A_L$ scales as $\alpha^{-2}$, $N_L^\phi$ as
+$\alpha^{-2}$, and the raw sum picks up a factor of $\alpha^2$.
+In =demo_search_fisher.py= this pathology made =5 · f_TT= score 25×
+higher than the correct Hu-Okamoto $f^{TT}$.
+
+=symqe.fisher_fom= cancels the $\alpha^2$ by multiplying the raw sum
+by $A_L(L_{\rm ref})$:
+
+#+begin_src python
+fom = sq.fisher_fom(N_L_phi, A_L, L_range=range(40, 181), L_ref=80)
+#+end_src
+
+Under $g \to \alpha g$ the sum scales as $\alpha^2$ and
+$A_L(L_{\rm ref})$ as $\alpha^{-2}$; the two cancel exactly.
+Verified on the Fisher demo: correct $f^{TT}$ and $5 \cdot f^{TT}$ now
+tie at $1.0850 \times 10^5$ (ratio $1.000000$ at machine precision).
+
+*Residual caveat.*  The gauge-fix kills the scaling artifact but not
+structural differences in $f$: candidates with different functional
+form (e.g. "$f^{TT}$ with no $C^{TT}$ response") imply a different
+physical target, and their $N_L^\phi$ is the minimum-variance noise
+for *that* target.  Fisher alone cannot tell "good reconstruction of
+the wrong quantity" from "good reconstruction of $\phi$" — for that
+you still need either (a) an oracle cross-correlation with a proxy
+$\phi$ signal, or (b) a fixed target $f$ in =compile_qe_from_f= with
+search restricted to structural variants of it.  =demo_search_fisher.py=
+shows both rankings (raw vs gauge-fixed) side-by-side.
 
 *What milestone 5 unlocks.*  A symbolic-search pipeline where each
 candidate weight is compiled into a *self-consistent triple*
-(estimator, A_L, N_L^phi) in one call, evaluated on data, and ranked.
-The remaining pieces for a production search tool (grammar enumerator,
-e-graph collapse, gauge-fixing, discovery objective) are listed under
-[[Future Work]] below.
+(estimator, $A_L$, $N_L^\phi$) in one call, ranked with either
+oracle cross-correlation or gauge-fixed Fisher.  The remaining pieces
+for a production search tool (grammar enumerator, e-graph collapse,
+discovery objective) are listed under [[Future Work]] below.
 
 *Scripts retained for diagnostic purposes.*
 
 - =scripts/demos/demo_search_unified.py= — canonical search demo with both
   cross-correlation and Fisher rankings.
-- =scripts/demos/demo_search_fisher.py= — pure-Fisher ranking showing the gauge
-  pathology.
+- =scripts/demos/demo_search_fisher.py= — raw vs gauge-fixed Fisher
+  rankings side-by-side (shows the $\alpha^2$ pathology and how
+  =fisher_fom= cancels it).
 - =scripts/demos/demo_search_diag.py= — per-L breakdown that surfaced the need for
   (2L+1)-weighted $\langle r(L) \rangle$ (naive global xcorr is
   dominated by low-$L$ $\phi$ power where the QE has no support).
@@ -1232,16 +1308,16 @@ search tool needs:
    scalar multiples, 3j column permutations, or $P$ absorption.
    Equality saturation (see section below) would canonicalize them
    automatically, shrinking the search space.
-3. *Gauge-fixing for Fisher ranking* — if oracle-free scoring is
-   required, rescale each candidate's $g$ so that $A_L$ at a
-   reference $L$ matches a common value, then compare $N_L^\phi$
-   elsewhere.  One line in the scoring pass.
-4. *Objective for unknown-field discovery* — the deepest gap, and
+3. *Objective for unknown-field discovery* — the deepest gap, and
    outside the engine scope.  Candidates: max non-Gaussianity
    response, orthogonality to known contaminants, cross-correlation
    with an external tracer.  This is the actual research question.
 
-Items 1–3 are ~a week each.
+(Gauge-fixing for Fisher ranking was originally on this list; it is
+now done — see =sq.fisher_fom= and =sq.compile_qe_from_f= under
+[[Milestone 5]]. The gauge artifact under $g \to \alpha g$ is killed;
+the residual "different physical target" ambiguity needs either
+an oracle or a fixed target $f$.)
 
 ** Pattern-based rewrite rules (Rule / Prewalk / Postwalk)
 

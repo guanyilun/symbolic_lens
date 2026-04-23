@@ -17,7 +17,21 @@ Both variants return ``(estimator, A_L_fn, N_L_phi_fn)``.  See
 suitable for ranking candidates.
 """
 import numpy as np
-from sympy import cancel, Symbol, Function
+from sympy import cancel, Symbol, Function, I as _sympy_I
+
+
+def _flip_I(expr):
+    """Return expr with every ``I`` replaced by ``-I``.
+
+    Equivalent to complex conjugation for our symbolic weights: the
+    only non-real atom in the DSL (sympy spectra, wigner_3j, l/l1/l2,
+    P, ladder a(l,s), gamma_f) is the imaginary unit ``I`` that rides
+    on ζ^- = i.  A full sympy ``conjugate()`` call leaves an opaque
+    ``conjugate(...)`` wrapper that the atomic-tree bridge cannot
+    convert — subs-ing ``I → -I`` is the semantically-equivalent
+    operation that stays inside the DSL.
+    """
+    return expr.subs(_sympy_I, -_sympy_I)
 
 from .l12_sum import l, l1, l2, NormCompiler
 from .estimator import compile_estimator
@@ -148,11 +162,20 @@ def _compile_qe_core(
     )
 
     # --- Normalization side ---
-    # Response (A_L^{-1}):  (1/(2L+1)) · sum g · f
-    integrand_AL_inv = cancel(g_symbolic * f_symbolic / (2 * l + 1))
+    # Response (A_L^{-1}):  (1/(2L+1)) · sum g · conj(f)
+    # conj(f) differs from f only for complex-coefficient weights
+    # (e.g. W^- with ζ^- = i).  For real-coefficient weights
+    # (lensing TT/EE/BB/TE) conj(f) = f and the old behavior is
+    # recovered; for complex-coefficient weights, using g·f (not
+    # g·conj(f)) would give a NEGATIVE integrand (I·I = -1), which
+    # the A_L = 1/inv path silently zeroed to `inf`.
+    integrand_AL_inv = cancel(g_symbolic * _flip_I(f_symbolic) / (2 * l + 1))
 
-    # Noise variance per mode: (1/(2L+1)) · sum g² · hCxx(l1) · hCyy(l2)
-    integrand_v = cancel(g_symbolic * g_symbolic * hCxx(l1) * hCyy(l2) / (2 * l + 1))
+    # Noise variance per mode: (1/(2L+1)) · sum |g|² · hCxx(l1) · hCyy(l2)
+    integrand_v = cancel(
+        g_symbolic * _flip_I(g_symbolic) * hCxx(l1) * hCyy(l2)
+        / (2 * l + 1)
+    )
 
     compiler = NormCompiler(lmax=lmax, rlmin=rlmin, rlmax=rlmax)
     AL_inv_fn, _ = compiler.build_and_compile(integrand_AL_inv, args=[l] + list(user_funcs))

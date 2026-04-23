@@ -22,7 +22,7 @@ backend and should match at machine precision.
 from __future__ import annotations
 import numpy as np
 
-from .atom import AtomicFactor, FuncApp, Pow, Var, Mul
+from .atom import AtomicFactor, FuncApp, Pow, Var, Mul, Add, Const
 from .estimator import EstimatorTerm
 from .estimator_backend import strip_gamma, _eval_atom
 
@@ -303,6 +303,75 @@ def pol_EB_pair(E_alm, B_alm):
     return np.stack([E + 1j * B, E - 1j * B]), 2
 
 
+# -------- int-truncation bug mirroring (falafel _gradient_spin compat) --------
+#
+# Falafel's _gradient_spin (spin=±2) initializes its ℓ-filter via
+# ``fl = ells * 0`` which — because ``ells`` is an int ndarray — produces
+# INTEGER zeros.  Subsequent ``fl[...] = np.sqrt(...)`` assignments are
+# silently truncated to int.  This is a real bug in falafel, but
+# hand-coded emitters mirror it bit-for-bit (see ``_gradient_spin`` here
+# in this file).  The symbolic emitter, by contrast, evaluates the
+# Namikawa a-factor as a true float, so the two paths disagree at the
+# per-ℓ level (~1% drift for low-ℓ, decaying at high-ℓ).  To stay
+# bit-for-bit with falafel, we mirror the truncation on the LADDER leg
+# of every plan whose X_filter / Y_filter structurally contains one of
+# the two int-truncated ladder factors:
+#     raising  : sqrt((l-2)(l+3))   (spin +2 → +3)
+#     lowering : sqrt((l-1)(l+2))   (spin -2 → -1)
+# The spin-0 temperature ladder sqrt(l(l+1)) is already computed as
+# float in falafel (``ells*(ells+1.0)``), so we do NOT truncate it.
+
+def _detect_truncatable_ladder(atom):
+    """Return 'raising' | 'lowering' | None based on whether the
+    AtomicFactor contains the int-truncatable polarization ladder factors.
+
+    Looks for sqrt((l-2))·sqrt((l+3)) (raising, spin=+2 gradient) or
+    sqrt((l-1))·sqrt((l+2)) (lowering, spin=-2 gradient) as subfactors.
+    """
+    import sympy as sp
+    if not isinstance(atom, Mul):
+        return None
+    has_lm1 = has_lm2 = has_lp2 = has_lp3 = False
+    for f in atom.factors:
+        if not (isinstance(f, Pow) and f.exp == sp.Rational(1, 2)):
+            continue
+        b = f.base
+        if not isinstance(b, Add):
+            continue
+        const_vals = [t.value for t in b.terms if isinstance(t, Const)]
+        if sp.Integer(-1) in const_vals: has_lm1 = True
+        if sp.Integer(-2) in const_vals: has_lm2 = True
+        if sp.Integer(2)  in const_vals: has_lp2 = True
+        if sp.Integer(3)  in const_vals: has_lp3 = True
+    if has_lm2 and has_lp3:
+        return 'raising'
+    if has_lm1 and has_lp2:
+        return 'lowering'
+    return None
+
+
+def _int_trunc_ratio(kind, lmax):
+    """Return per-ℓ ratio ``int_fl / float_fl`` of the int-truncated
+    vs. true-float ladder factor.  Length ``lmax+1`` (zeroed at l=lmax
+    to match falafel's length-mlmax convention)."""
+    ells = np.arange(0, lmax)
+    if kind == 'raising':
+        ff = np.zeros_like(ells, dtype=float)
+        ff[ells >= 2] = np.sqrt((ells[ells >= 2] - 2) * (ells[ells >= 2] + 3.0))
+        fi = ells * 0
+        fi[ells >= 2] = np.sqrt((ells[ells >= 2] - 2) * (ells[ells >= 2] + 3.0))
+    elif kind == 'lowering':
+        ff = np.zeros_like(ells, dtype=float)
+        ff[ells >= 1] = np.sqrt((ells[ells >= 1] - 1) * (ells[ells >= 1] + 2.0))
+        fi = ells * 0
+        fi[ells >= 1] = np.sqrt((ells[ells >= 1] - 1) * (ells[ells >= 1] + 2.0))
+    else:
+        return None
+    ff_full = np.zeros(lmax + 1); ff_full[:lmax] = ff
+    fi_full = np.zeros(lmax + 1); fi_full[:lmax] = fi.astype(float)
+    return np.where(ff_full != 0, fi_full / ff_full, 1.0)
+
+
 # -------- the generic emitter --------
 
 def compile_native(terms, lmax, *, px=None, nside=None, shape=None, wcs=None):
@@ -379,6 +448,22 @@ def compile_native(terms, lmax, *, px=None, nside=None, shape=None, wcs=None):
                     y_fl = y_fl.copy(); y_fl[lmax] = 0.0
                     y_fl[0] = 0.0; y_fl[1] = 0.0
                 L_fl = L_fl.copy(); L_fl[lmax] = 0.0
+
+                # Falafel-compat int-truncation of polarization ladder
+                # factors.  Hand-coded _gradient_spin(spin=±2) builds its
+                # ℓ-filter as an int array (``fl = ells * 0``) then assigns
+                # sqrt(...) values to it, silently truncating to int.
+                # Mirror that here by substituting the truncated ratio into
+                # x_fl / y_fl on any ladder leg whose filter structurally
+                # carries one of the two int-truncated ladder factors.
+                if ladder_X and plan.abs_spin_X > 0:
+                    kind = _detect_truncatable_ladder(plan.X_filter)
+                    if kind is not None:
+                        x_fl = x_fl * _int_trunc_ratio(kind, lmax)
+                if ladder_Y and plan.abs_spin_Y > 0:
+                    kind = _detect_truncatable_ladder(plan.Y_filter)
+                    if kind is not None:
+                        y_fl = y_fl * _int_trunc_ratio(kind, lmax)
 
             Xf = np.stack([hp.almxfl(X_pair[0], x_fl),
                            hp.almxfl(X_pair[1], x_fl)])

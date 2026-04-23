@@ -37,7 +37,7 @@ def test_enumerator_dedup_idempotent():
         return list(sq.enumerate_candidates(
             m_max=2,
             coeffs=(1, -1),
-            p_powers=(0, 1),
+            parity_factors=(1, sq.P),
             max_leg_factors=1,
             ladder_spins=(0, 2, -2),
             spectra_X={"CT": sq.CT},

@@ -111,11 +111,14 @@ def canonical_key(expr: Expr):
 
 # --- enumerator -------------------------------------------------------
 
+_DEFAULT_PARITY_FACTORS = (sympify(1), P, 1 + P, 1 - P)
+
+
 def enumerate_candidates(
     *,
     m_max: int = 3,
     coeffs=_DEFAULT_COEFFS,
-    p_powers=(0, 1),
+    parity_factors=_DEFAULT_PARITY_FACTORS,
     max_leg_factors: int = 2,
     ladder_spins=_DEFAULT_LADDER_SPINS,
     spectra_X=None,
@@ -132,9 +135,13 @@ def enumerate_candidates(
         Max absolute value of 3j m-indices.
     coeffs : iterable
         Complex coefficients to try (default ±1, ±i).
-    p_powers : iterable of int
-        P exponents to try (default (0, 1)).  P²=1 makes anything beyond
-        1 redundant.
+    parity_factors : iterable of sympy.Expr
+        P-parity factors to multiply the base term by.  Default is
+        ``(1, P, 1+P, 1-P)``: the first two are the plain P⁰/P¹ powers,
+        the last two are the Namikawa q± = (1±P)/2 selectors (up to
+        scale).  Terms containing sums like ``1+P`` will compile into
+        multi-term EstimatorTerm lists, which is how q_plus-style
+        weights become a single candidate.
     max_leg_factors : int
         Max number of atoms multiplied on each leg filter.
     ladder_spins : iterable of int
@@ -151,14 +158,14 @@ def enumerate_candidates(
         Useful e.g. ``(-1, 1)`` for lensing-like scalar output.
     symmetrize_l1l2 : bool
         If True, also emit ``expr + swap_l1l2(expr)`` for each
-        candidate.  Doubles the output; useful for TT/EE/BB-style
-        symmetric estimators.
+        candidate.  Useful for TT/EE/BB-style symmetric estimators
+        (Hu-Okamoto f_TT is exactly a symmetrization of a half-weight).
 
     Yields
     ------
     (metadata, expr) where metadata is a dict of the candidate's
-    generating parameters (coeff, m_triple, P_power, x_filter_src,
-    y_filter_src, symmetric).
+    generating parameters (coeff, m_triple, parity, x_filter,
+    y_filter, flavor).
     """
     assert field_gating in ("permissive", "strict")
 
@@ -177,11 +184,11 @@ def enumerate_candidates(
     seen = set()
     for coeff in coeffs:
         for (mL, mX, mY) in mlist:
-            for pk in p_powers:
+            for parity in parity_factors:
                 for X_filter in X_filters:
                     for Y_filter in Y_filters:
                         base = (coeff * gamma_f(l1, l, l2) * X_filter * Y_filter
-                                * wigner_3j(l, l1, l2, mL, mX, mY) * (P ** pk))
+                                * wigner_3j(l, l1, l2, mL, mX, mY) * parity)
                         exprs = [("raw", base)]
                         if symmetrize_l1l2:
                             swapped = base.subs({l1: l2, l2: l1},
@@ -196,7 +203,7 @@ def enumerate_candidates(
                             meta = dict(
                                 coeff=coeff,
                                 m_triple=(mL, mX, mY),
-                                P_power=pk,
+                                parity=parity,
                                 X_filter=X_filter,
                                 Y_filter=Y_filter,
                                 flavor=tag,

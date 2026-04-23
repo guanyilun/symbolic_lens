@@ -327,22 +327,44 @@ def _detect_truncatable_ladder(atom):
 
     Looks for sqrt((l-2))·sqrt((l+3)) (raising, spin=+2 gradient) or
     sqrt((l-1))·sqrt((l+2)) (lowering, spin=-2 gradient) as subfactors.
+
+    Returns ``None`` if the filter is a *chained* ladder (e.g. the shear
+    weight sqrt((l-1)·l·(l+1)·(l+2)) = sqrt(l-1)·sqrt(l)·sqrt(l+1)·
+    sqrt(l+2)).  In a chained case falafel would evaluate the whole
+    product as a single ``np.sqrt(int_product)`` — no int-truncation
+    happens because the int-product is computed first and the sqrt then
+    returns float.  The int-truncation bug only applies when the
+    polarization ladder factor is isolated (so it goes through
+    _gradient_spin's fl=ells*0 initialization).  Presence of sqrt(l) AND
+    sqrt(l+1) alongside the polarization ladder is the signal of
+    chaining.
     """
     import sympy as sp
     if not isinstance(atom, Mul):
         return None
-    has_lm1 = has_lm2 = has_lp2 = has_lp3 = False
+    has_lm1 = has_lm2 = has_l = has_lp1 = has_lp2 = has_lp3 = False
     for f in atom.factors:
         if not (isinstance(f, Pow) and f.exp == sp.Rational(1, 2)):
             continue
         b = f.base
+        if isinstance(b, Var):
+            # sqrt(l) — bare variable base
+            has_l = True
+            continue
         if not isinstance(b, Add):
             continue
         const_vals = [t.value for t in b.terms if isinstance(t, Const)]
         if sp.Integer(-1) in const_vals: has_lm1 = True
         if sp.Integer(-2) in const_vals: has_lm2 = True
+        if sp.Integer(1)  in const_vals: has_lp1 = True
         if sp.Integer(2)  in const_vals: has_lp2 = True
         if sp.Integer(3)  in const_vals: has_lp3 = True
+    # Chained ladder check: both the spin-0 grad (sqrt(l)·sqrt(l+1)) AND
+    # a polarization ladder are present → falafel evaluates as one
+    # sqrt(int_product), no truncation.
+    is_chained = has_l and has_lp1
+    if is_chained:
+        return None
     if has_lm2 and has_lp3:
         return 'raising'
     if has_lm1 and has_lp2:
@@ -447,7 +469,16 @@ def compile_native(terms, lmax, *, px=None, nside=None, shape=None, wcs=None):
                 if ladder_Y and plan.abs_spin_Y > 0:
                     y_fl = y_fl.copy(); y_fl[lmax] = 0.0
                     y_fl[0] = 0.0; y_fl[1] = 0.0
-                L_fl = L_fl.copy(); L_fl[lmax] = 0.0
+                # L-side mlmax truncation: falafel's
+                # deflection_map_to_phi_curl_alms builds a length-mlmax
+                # sqrt(l(l+1)) filter that zeros l=mlmax.  Mirror this
+                # only when plan.L_factor is NONTRIVIAL (i.e. carries a
+                # genuine grad factor).  For estimators with L_factor =
+                # Const(1) (shear, source, etc.), there's no such filter
+                # and we must NOT zero l=lmax on the output side.
+                if not (isinstance(plan.L_factor, Const)
+                        and complex(plan.L_factor.evaluate({})) == 1):
+                    L_fl = L_fl.copy(); L_fl[lmax] = 0.0
 
                 # Falafel-compat int-truncation of polarization ladder
                 # factors.  Hand-coded _gradient_spin(spin=±2) builds its

@@ -244,14 +244,16 @@ def _normalize_w3j_args(node: AtomicFactor) -> AtomicFactor:
 # ----------------------------- code emission ----------------------------
 
 @dataclass
-class L12SumCompiler:
+class NormCompiler:
     """Compile a sympy expression into a numpy callable kernel(L, A, B, ...).
+
+    For most uses prefer the ``compile_norm`` convenience function below.
 
     Usage:
         expr = (symbolic formula in terms of l, l1, l2, P, wigner_3j,
                 and user sympy Functions A, B, ...)
-        compiler = L12SumCompiler(lmax=..., rlmin=..., rlmax=...)
-        func, ir = compiler.build_and_compile(expr, args=[l, A, B])
+        compiler = NormCompiler(lmax=..., rlmin=..., rlmax=...)
+        func, terms = compiler.build_and_compile(expr, args=[l, A, B])
         kernel = func(ell_out_array, A_array, B_array)
     """
     lmax: int
@@ -279,6 +281,22 @@ class L12SumCompiler:
         return ir, terms
 
     build = build_and_compile    # friendly alias
+
+
+def compile_norm(sympy_expr, *, lmax, rlmin, rlmax, args=None):
+    """Compile a normalization expression to a numpy callable.
+
+    Returns ``kernel(ell_out, *user_arrays)`` where ``user_arrays`` supply
+    the sympy ``Function`` symbols referenced in ``sympy_expr`` in the
+    order given by ``args`` (or first-appearance order if ``args`` is None).
+
+    Thin convenience wrapper around :class:`NormCompiler` that drops the
+    internal Term list — if you need both the callable and the Terms,
+    instantiate ``NormCompiler`` directly.
+    """
+    compiler = NormCompiler(lmax=lmax, rlmin=rlmin, rlmax=rlmax)
+    func, _terms = compiler.build_and_compile(sympy_expr, args=args)
+    return func
 
 
 def _emit(terms: list[Term], cl2cf, cf2cl, lmax, func_names_ordered=None):

@@ -14,7 +14,7 @@ import numpy as np
 import jax.numpy as jnp
 from sympy import Function, sqrt, pi
 
-from symqe.engine.l12_sum import L12SumCompiler, wigner_3j, l, l1, l2, P
+from symqe.engine.l12_sum import NormCompiler, wigner_3j, l, l1, l2, P
 from symqe.reference import norm_lens as nl
 
 # ---- Parameters ----
@@ -97,7 +97,7 @@ kernel_exprs = {
     "Gm": gp.subs(P, -P),
     "Gx": build_gamma(W_lens_0, W_lens_p),
 }
-compiler = L12SumCompiler(lmax=LMAX, rlmin=RLMIN, rlmax=RLMAX)
+compiler = NormCompiler(lmax=LMAX, rlmin=RLMIN, rlmax=RLMAX)
 kern_fn = {}
 for name, expr in kernel_exprs.items():
     print(f"  {name}...", flush=True)

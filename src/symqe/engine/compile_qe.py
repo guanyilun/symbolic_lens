@@ -5,7 +5,7 @@ Given a symbolic weight ``g(l1, L, l2)`` = f/(Δ · hCxx(l1) · hCyy(l2)),
 this wires two existing pipelines:
 
   * ``compile_estimator → compile_native``  →  estimator fn(X, Y, spec)
-  * ``L12SumCompiler``                       →  A_L^{-1} fn(L, *spectra)
+  * ``NormCompiler``                         →  A_L^{-1} fn(L, *spectra)
 
 The normalization integrand is derived directly from ``g``:
    A_L^{-1}(L) = (1/(2L+1)) · sum_{l1,l2} g² · Δ · hCxx(l1) · hCyy(l2)
@@ -17,7 +17,7 @@ flips I → -I on one copy before multiplying.
 import numpy as np
 from sympy import cancel, Symbol, Function
 
-from .l12_sum import l, l1, l2, L12SumCompiler
+from .l12_sum import l, l1, l2, NormCompiler
 from .estimator import compile_estimator
 from .estimator_backend import strip_gamma
 from .estimator_native import compile_native
@@ -94,7 +94,7 @@ def compile_qe(
     integrand_v = g_symbolic * g_symbolic * hCxx(l1) * hCyy(l2) / (2 * l + 1)
     integrand_v = cancel(integrand_v)
 
-    compiler = L12SumCompiler(lmax=lmax, rlmin=rlmin, rlmax=rlmax)
+    compiler = NormCompiler(lmax=lmax, rlmin=rlmin, rlmax=rlmax)
     AL_inv_fn, _ = compiler.build_and_compile(integrand_AL_inv, args=[l] + list(user_funcs))
     v_fn,      _ = compiler.build_and_compile(integrand_v,      args=[l] + list(user_funcs))
 

@@ -12,7 +12,7 @@ against pytempura-validated hand-coded kernels).
 """
 from sympy import Function, sqrt, pi, I
 from sympy.physics.wigner import wigner_3j as w3j_exact
-from symqe.engine.l12_sum import L12SumCompiler, wigner_3j, l, l1, l2, P
+from symqe.engine.l12_sum import NormCompiler, wigner_3j, l, l1, l2, P
 import numpy as np
 
 # ---- Build symbolic kernels ----
@@ -138,7 +138,7 @@ kernels_sym_expr["Gm"] = gamma_p_expr.subs(P, -P)
 kernels_sym_expr["Gx"] = build_gamma(W_lens_0, W_lens_p, l, c_phi, c_phi)
 
 print("Compiling symbolic kernels...")
-compiler = L12SumCompiler(lmax=lmax, rlmin=rlmin, rlmax=rlmax)
+compiler = NormCompiler(lmax=lmax, rlmin=rlmin, rlmax=rlmax)
 kernels_sym_func = {}
 for name, expr in kernels_sym_expr.items():
     print(f"  Compiling {name}...")

@@ -44,7 +44,7 @@ kernels_lens["Gp"] = gamma_p_expr
 kernels_lens["Gm"] = gamma_p_expr.subs(P, -P)
 kernels_lens["Gx"] = build_gamma(W_lens_0, W_lens_p, l, c_phi, c_phi)
 
-compiler = L12SumCompiler(lmax=100, rlmin=1, rlmax=100)
+compiler = NormCompiler(lmax=100, rlmin=1, rlmax=100)
 
 kernels_lens_func = {}
 for name, expr in kernels_lens.items():

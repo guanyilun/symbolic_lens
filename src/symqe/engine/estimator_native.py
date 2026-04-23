@@ -608,6 +608,84 @@ def compile_native(terms, lmax, *, px=None, nside=None, shape=None, wcs=None):
     return emit
 
 
+# ----------------------------------------------------------------------
+# High-level wrapper: build_estimator
+# ----------------------------------------------------------------------
+#
+# compile_native returns a callable with a raw (alm_pair, spin_alm) input
+# convention.  That's the right primitive but it's awkward for the common
+# physicist use case — "I have a T alm, I want a phi alm".  build_estimator
+# wraps it with an explicit ``X=`` / ``Y=`` tag so the returned callable
+# takes raw alms directly and does the ±spin pair packing internally.
+
+def build_estimator(g_or_recipe, lmax, *,
+                    X=None, Y=None,
+                    nside=None, shape=None, wcs=None, px=None):
+    """Build the QE estimator callable from a symbolic weight or a
+    pre-compiled recipe.
+
+    Parameters
+    ----------
+    g_or_recipe : sympy expression OR list[EstimatorTerm]
+        Either the symbolic weight ``g(l, L, l')`` (which is compiled
+        internally via ``compile_estimator``) or a recipe already produced
+        by ``compile_estimator``.  Use the two-step form when you want to
+        inspect the recipe first (``symqe.pretty(recipe)``).
+    lmax : int
+    X, Y : {'T', 'E', 'B'}, optional
+        The physical field on each input leg.  When both are given, the
+        returned estimator takes raw alms directly::
+
+            estimator(X_alm, Y_alm, spectra) -> phi_alm
+
+        When omitted, the returned estimator exposes the lower-level
+        (alm_pair, spin_alm) interface — useful for custom input packings.
+    nside, shape, wcs, px
+        Pixelization, same options as ``compile_native``.
+
+    Returns
+    -------
+    estimator : callable
+        The QE estimator.  Carries ``.recipe`` (the EstimatorTerm list)
+        and ``.fused_plans`` for introspection.
+    """
+    if isinstance(g_or_recipe, list):
+        recipe = g_or_recipe
+    else:
+        from .estimator import compile_estimator
+        recipe = compile_estimator(g_or_recipe)
+
+    raw = compile_native(recipe, lmax, px=px, nside=nside, shape=shape, wcs=wcs)
+
+    if X is None and Y is None:
+        raw.recipe = recipe
+        return raw
+
+    if X is None or Y is None:
+        raise ValueError("Pass both X and Y, or neither.")
+
+    pack_X = _make_packer(X)
+    pack_Y = _make_packer(Y)
+
+    def estimator(X_alm, Y_alm, spectra):
+        return raw(pack_X(X_alm), pack_Y(Y_alm), spectra)
+
+    estimator.recipe = recipe
+    estimator.fused_plans = raw.fused_plans
+    estimator.raw = raw
+    return estimator
+
+
+def _make_packer(field):
+    if field == 'T':
+        return scalar_pair
+    if field == 'E':
+        return pol_E_pair
+    if field == 'B':
+        return pol_B_pair
+    raise ValueError(f"Unknown field {field!r}; expected 'T', 'E', or 'B'.")
+
+
 def _alm_to_signed_pair(px, filtered_pair, spin_alm_in, abs_spin_out, lmax):
     """Produce (M_+|s_out|, M_-|s_out|) complex-map pair from a filtered alm pair.
 

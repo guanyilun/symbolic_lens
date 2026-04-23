@@ -102,11 +102,16 @@ class EstimatorTerm:
 
 # -------------------------------------------------------- pipeline
 
-def compile_estimator(sympy_expr) -> list[EstimatorTerm]:
+def compile_estimator(sympy_expr, *, keep_gamma: bool = False) -> list[EstimatorTerm]:
     """Compile a symbolic estimator weight g(l, L, l') into a list of
     EstimatorTerms.
 
-    Pipeline (same layers as l12_sum.compile_to_terms, different top stage):
+    By default the γ-factors (``sqrt(2·var+1)`` pieces that come from
+    Namikawa's W-weights) are stripped, because every downstream emitter
+    assumes the SHT normalization reabsorbs them.  Pass ``keep_gamma=True``
+    if you want to inspect the raw, unstripped recipe.
+
+    Pipeline (same layers as l12_sum.compile_norm, different top stage):
       1. from_sympy               sympy → atom tree
       2. _normalize_w3j_args      canonicalize each w3j to j-args (l, l1, l2)
       3. flatten                  distribute + collect to FlatTerms
@@ -122,7 +127,10 @@ def compile_estimator(sympy_expr) -> list[EstimatorTerm]:
         t = _flat_to_estimator_term(ft)
         if t is not None:
             terms.append(t)
-    return terms
+    if keep_gamma:
+        return terms
+    from .estimator_backend import strip_gamma
+    return strip_gamma(terms)
 
 
 def _flat_to_estimator_term(ft: FlatTerm) -> EstimatorTerm | None:
